@@ -1,0 +1,5 @@
+{
+  "name": "PlanejaZap CRM",
+  "description": "Centralizador de atendimentos WhatsApp para marcenarias e lojas de móveis planejados, inspirado no Zendesk.",
+  "requestFramePermissions": ["microphone", "camera"]
+}
