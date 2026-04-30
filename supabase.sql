@@ -106,4 +106,4 @@ CREATE POLICY "Allow all access" ON internal_messages FOR ALL USING (true);
 CREATE POLICY "Allow all access" ON invitations FOR ALL USING (true);
 
 -- Initial Data
-INSERT INTO departments (name) VALUES ('Vendas'), ('Projetos'), ('Produção'), ('Financeiro'), ('Pós-Venda');
+INSERT INTO departments (name, sequence) VALUES ('Vendas', 1), ('Projetos', 2), ('Produção', 3), ('Financeiro', 4), ('Pós-Venda', 5);

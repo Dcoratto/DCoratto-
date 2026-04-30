@@ -394,7 +394,7 @@ async function startServer() {
 
           if (!ticket) {
             console.log(`[WA-IN] Creating new ticket for customer ${customer.id}`);
-            const { data: depts } = await supabase.from('departments').select('id').limit(1);
+            const { data: depts } = await supabase.from('departments').select('id').order('sequence', { ascending: true }).limit(1);
             const deptId = depts?.[0]?.id;
 
             if (!deptId) {
