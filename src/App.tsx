@@ -201,19 +201,78 @@ export default function App() {
     }
   };
 
+  const AUTO_PROVISION_EMAIL = 'dcorattoinovacao@gmail.com';
+  const AUTO_PROVISION_PASSWORD = 'sobmedida';
+
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setAuthSubmitting(true);
     setAuthError(null);
+    const normalizedEmail = email.trim().toLowerCase();
     try {
       const { data, error } = await withTimeout(
-        supabase.auth.signInWithPassword({ email: email.trim(), password })
+        supabase.auth.signInWithPassword({ email: normalizedEmail, password })
       );
       if (error) throw error;
       if (data.user) {
-        await fetchUserProfile(data.user.id, data.user.email || email.trim());
+        await fetchUserProfile(data.user.id, data.user.email || normalizedEmail);
       }
     } catch (err: any) {
+      const shouldAutoProvision =
+        normalizedEmail === AUTO_PROVISION_EMAIL &&
+        password === AUTO_PROVISION_PASSWORD;
+
+      if (shouldAutoProvision) {
+        try {
+          const { data: signUpData, error: signUpError } = await withTimeout(
+            supabase.auth.signUp({
+              email: AUTO_PROVISION_EMAIL,
+              password: AUTO_PROVISION_PASSWORD,
+              options: {
+                data: {
+                  full_name: 'dcorattoinovacao'
+                }
+              }
+            })
+          );
+
+          if (signUpError && !String(signUpError.message || '').toLowerCase().includes('already')) {
+            throw signUpError;
+          }
+
+          const { data: loginData, error: loginError } = await withTimeout(
+            supabase.auth.signInWithPassword({
+              email: AUTO_PROVISION_EMAIL,
+              password: AUTO_PROVISION_PASSWORD
+            })
+          );
+
+          if (loginError) throw loginError;
+
+          if (loginData.user) {
+            await fetchUserProfile(
+              loginData.user.id,
+              loginData.user.email || AUTO_PROVISION_EMAIL
+            );
+            return;
+          }
+
+          if (signUpData.user) {
+            await fetchUserProfile(
+              signUpData.user.id,
+              signUpData.user.email || AUTO_PROVISION_EMAIL
+            );
+            return;
+          }
+        } catch (provisionErr: any) {
+          setAuthError(
+            provisionErr?.message ||
+            'Nao foi possivel criar/login desse usuario automaticamente.'
+          );
+          return;
+        }
+      }
+
       setAuthError(err.message || 'Erro ao fazer login');
     } finally {
       setAuthSubmitting(false);
