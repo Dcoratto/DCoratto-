@@ -13,6 +13,12 @@ export interface Message {
   text: string;
   sender: 'customer' | 'agent';
   timestamp: Date;
+  messageType?: 'text' | 'audio' | 'image' | 'video' | 'document' | 'file' | 'system';
+  mediaUrl?: string;
+  mediaMimeType?: string;
+  mediaFileName?: string;
+  mediaSize?: number;
+  attachments?: MessageAttachment[];
   isFlagged?: boolean;
   flaggedBy?: string; // User Name
   flaggedAt?: Date;
@@ -26,10 +32,29 @@ export interface InternalMessage {
   senderName: string;
   departmentName?: string;
   timestamp: Date;
+  attachments?: MessageAttachment[];
   isFlagged?: boolean;
   flaggedBy?: string; // User Name
   flaggedAt?: Date;
   quotedMessageId?: string; // ID of the customer message being quoted
+}
+
+export interface MessageAttachment {
+  id: string;
+  messageId?: string;
+  internalMessageId?: string;
+  ticketId: string;
+  customerId?: string;
+  bucket: string;
+  storagePath: string;
+  publicUrl: string;
+  fileName: string;
+  originalName?: string;
+  mimeType?: string;
+  fileSize?: number;
+  attachmentType: 'audio' | 'image' | 'video' | 'document' | 'file';
+  uploadedBy?: string;
+  createdAt: Date;
 }
 
 export interface Customer {

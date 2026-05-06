@@ -80,7 +80,11 @@ async function uploadToSupabase(buffer: Buffer, fileName: string, mimeType: stri
     .from(bucketName)
     .getPublicUrl(fileName);
 
-  return publicUrl;
+  return {
+    bucket: bucketName,
+    path: fileName,
+    publicUrl
+  };
 }
 
 async function startServer() {
@@ -334,6 +338,10 @@ async function startServer() {
                         actualMessage.imageMessage ? 'image' :
                         actualMessage.videoMessage ? 'video' :
                         actualMessage.documentMessage ? 'document' : null;
+          let mediaStoragePath = '';
+          let mediaFileName = '';
+          let mediaMimeType = '';
+          let mediaSize = 0;
 
           if (mType) {
             console.log(`[WA-IN] Downloading ${mType} from ${phone}...`);
@@ -354,13 +362,19 @@ async function startServer() {
                                (actualMessage.documentMessage?.fileName?.split('.').pop() || 'bin');
               
               const fileName = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}.${extension}`;
-              const mimeType = mType === 'audio' ? 'audio/mpeg' : 
+              const mimeType = actualMessage.documentMessage?.mimetype ||
+                               (mType === 'audio' ? 'audio/mpeg' : 
                                mType === 'image' ? 'image/jpeg' : 
-                               mType === 'video' ? 'video/mp4' : 'application/octet-stream';
+                               mType === 'video' ? 'video/mp4' : 'application/octet-stream');
+              mediaFileName = fileName;
+              mediaMimeType = mimeType;
+              mediaSize = (buffer as Buffer).length;
+              mediaStoragePath = `whatsapp/${phone}/${fileName}`;
 
               console.log(`[WA-IN] Uploading ${mType} to Supabase Storage...`);
               try {
-                mediaUrl = await uploadToSupabase(buffer as Buffer, fileName, mimeType);
+                const uploadResult = await uploadToSupabase(buffer as Buffer, mediaStoragePath, mimeType);
+                mediaUrl = uploadResult.publicUrl;
                 console.log(`[WA-IN] Media uploaded successfully: ${mediaUrl}`);
               } catch (uploadError) {
                 console.error(`[WA-IN-ERROR] Supabase upload failed, falling back to local:`, uploadError);
@@ -369,10 +383,10 @@ async function startServer() {
                 mediaUrl = `/media/${fileName}`;
               }
               
-              if (mType === 'audio') text = `🎤 [AUDIO]${mediaUrl}`;
-              else if (mType === 'image') text = `📷 [IMAGE]${mediaUrl}`;
-              else if (mType === 'video') text = `🎥 [VIDEO]${mediaUrl}`;
-              else text = `📄 [FILE]${mediaUrl}`;
+              if (mType === 'audio') text = `[AUDIO]${mediaUrl}`;
+              else if (mType === 'image') text = `[IMAGE]${mediaUrl}`;
+              else if (mType === 'video') text = `[VIDEO]${mediaUrl}`;
+              else text = `[FILE]${mediaUrl}`;
             } catch (downloadError) {
               console.error(`[WA-IN-ERROR] Failed to download ${mType}:`, downloadError);
               text = `⚠️ [ERRO AO BAIXAR ${mType.toUpperCase()}]`;
@@ -453,15 +467,54 @@ async function startServer() {
 
           // 3. Insert message
           console.log(`[WA-IN] Inserting message for ticket ${ticket.id}`);
-          const { error: msgError } = await supabase
+          let { data: insertedMessage, error: msgError } = await supabase
             .from('messages')
             .insert({
               ticket_id: ticket.id,
               text: text,
-              sender: 'customer'
-            });
+              sender: 'customer',
+              message_type: mType || 'text',
+              media_url: mediaUrl || null,
+              media_mime_type: mediaMimeType || null,
+              media_file_name: actualMessage.documentMessage?.fileName || mediaFileName || null,
+              media_size: mediaSize || null
+            })
+            .select('id')
+            .maybeSingle();
 
-          if (msgError) throw msgError;
+          if (msgError) {
+            const fallback = await supabase
+              .from('messages')
+              .insert({
+                ticket_id: ticket.id,
+                text: text,
+                sender: 'customer'
+              })
+              .select('id')
+              .maybeSingle();
+
+            if (fallback.error) throw fallback.error;
+            insertedMessage = fallback.data;
+          }
+
+          if (insertedMessage?.id && mediaUrl) {
+            const { error: attachmentError } = await supabase
+                .from('message_attachments')
+                .insert({
+                  message_id: insertedMessage.id,
+                  ticket_id: ticket.id,
+                  customer_id: customer.id,
+                  bucket: 'chat-media',
+                  storage_path: mediaStoragePath || mediaFileName,
+                  public_url: mediaUrl,
+                  file_name: mediaFileName,
+                  original_name: actualMessage.documentMessage?.fileName || mediaFileName,
+                  mime_type: mediaMimeType,
+                  file_size: mediaSize,
+                  attachment_type: mType === 'document' ? 'document' : mType
+                });
+            if (attachmentError) logSupabaseError('Saving message attachment metadata', attachmentError);
+          }
 
           // 4. Update ticket last message
           await supabase
@@ -537,17 +590,40 @@ async function startServer() {
       const mimeType = req.file.mimetype;
       
       console.log(`[UPLOAD] Uploading ${fileName} to Supabase Storage...`);
-      const publicUrl = await uploadToSupabase(buffer, fileName, mimeType);
+      const originalName = req.file.originalname;
+      const safeOriginalName = originalName.replace(/[^\w.\-]+/g, '_');
+      const storagePath = `uploads/${new Date().toISOString().slice(0, 10)}/${Date.now()}-${safeOriginalName}`;
+      const uploadResult = await uploadToSupabase(buffer, storagePath, mimeType);
       
       // Clean up local file
       fs.unlinkSync(req.file.path);
       
-      res.json({ success: true, url: publicUrl });
+      res.json({
+        success: true,
+        url: uploadResult.publicUrl,
+        bucket: uploadResult.bucket,
+        path: uploadResult.path,
+        originalName,
+        fileName: path.basename(uploadResult.path),
+        mimeType,
+        size: req.file.size,
+        storageProvider: 'supabase'
+      });
     } catch (error) {
       console.error('[UPLOAD-ERROR] Failed to upload to Supabase:', error);
       // Fallback to local URL if Supabase fails
       const fileUrl = `/media/${req.file.filename}`;
-      res.json({ success: true, url: fileUrl });
+      res.json({
+        success: true,
+        url: fileUrl,
+        bucket: 'local-media',
+        path: req.file.filename,
+        originalName: req.file.originalname,
+        fileName: req.file.filename,
+        mimeType: req.file.mimetype,
+        size: req.file.size,
+        storageProvider: 'local'
+      });
     }
   });
   
@@ -631,8 +707,8 @@ async function startServer() {
         const jid = to.replace(/\D/g, '') + '@s.whatsapp.net';
         
         // Handle Media Messages
-        if (message.startsWith('📷 [IMAGE]')) {
-          const url = message.replace('📷 [IMAGE]', '');
+        if (message.startsWith('[IMAGE]') || message.startsWith('📷 [IMAGE]')) {
+          const url = message.replace('[IMAGE]', '').replace('📷 [IMAGE]', '');
           // If it's a local path /media/..., we need to read it from disk
           if (url.startsWith('/media/')) {
             const fileName = url.replace('/media/', '');
@@ -649,8 +725,8 @@ async function startServer() {
             return res.status(400).json({ success: false, error: 'Cannot send blob URL' });
           }
           await sock.sendMessage(jid, { image: { url: finalUrl } });
-        } else if (message.startsWith('🎤 [AUDIO]')) {
-          const url = message.replace('🎤 [AUDIO]', '');
+        } else if (message.startsWith('[AUDIO]') || message.startsWith('🎤 [AUDIO]')) {
+          const url = message.replace('[AUDIO]', '').replace('🎤 [AUDIO]', '');
           if (url.startsWith('/media/')) {
             const fileName = url.replace('/media/', '');
             const filePath = path.join(mediaDir, fileName);
@@ -665,16 +741,16 @@ async function startServer() {
             return res.status(400).json({ success: false, error: 'Cannot send blob URL' });
           }
           await sock.sendMessage(jid, { audio: { url: finalUrl }, mimetype: 'audio/mp4', ptt: true });
-        } else if (message.startsWith('🎥 [VIDEO]')) {
-          const url = message.replace('🎥 [VIDEO]', '');
+        } else if (message.startsWith('[VIDEO]') || message.startsWith('🎥 [VIDEO]')) {
+          const url = message.replace('[VIDEO]', '').replace('🎥 [VIDEO]', '');
           const finalUrl = (url.startsWith('http') || url.startsWith('blob:')) ? url : `${getPublicBaseUrl(req)}${url}`;
           if (finalUrl.startsWith('blob:')) {
             console.error('[WA] Cannot send blob URL to WhatsApp. Client must upload file first.');
             return res.status(400).json({ success: false, error: 'Cannot send blob URL' });
           }
           await sock.sendMessage(jid, { video: { url: finalUrl } });
-        } else if (message.startsWith('📄 [FILE]')) {
-          const url = message.replace('📄 [FILE]', '');
+        } else if (message.startsWith('[FILE]') || message.startsWith('📄 [FILE]')) {
+          const url = message.replace('[FILE]', '').replace('📄 [FILE]', '');
           const finalUrl = (url.startsWith('http') || url.startsWith('blob:')) ? url : `${getPublicBaseUrl(req)}${url}`;
           if (finalUrl.startsWith('blob:')) {
             console.error('[WA] Cannot send blob URL to WhatsApp. Client must upload file first.');

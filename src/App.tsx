@@ -54,7 +54,7 @@ import {
 import { format } from 'date-fns';
 import { cn } from './lib/utils';
 import { supabase } from './lib/supabase';
-import { Ticket, Message, TicketStatus, Customer, User, Department, UserRole, DepartmentName, WhatsAppConfig, Invitation, InternalMessage, TicketDocument } from './types';
+import { Ticket, Message, TicketStatus, Customer, User, Department, UserRole, WhatsAppConfig, Invitation, InternalMessage, TicketDocument, MessageAttachment } from './types';
 import { motion, AnimatePresence } from 'motion/react';
 import { Session } from '@supabase/supabase-js';
 
@@ -110,6 +110,139 @@ export default function App() {
   const [showFlaggedOnly, setShowFlaggedOnly] = useState(false);
   const [quotedMessageId, setQuotedMessageId] = useState<string | null>(null);
   const [isOnline, setIsOnline] = useState(navigator.onLine);
+
+  type UploadedFilePayload = {
+    url: string;
+    bucket: string;
+    path: string;
+    originalName: string;
+    fileName: string;
+    mimeType: string;
+    size: number;
+    storageProvider: 'supabase' | 'local';
+  };
+
+  const getAttachmentType = (mimeType: string, fileName: string): MessageAttachment['attachmentType'] => {
+    if (mimeType.startsWith('audio/')) return 'audio';
+    if (mimeType.startsWith('image/')) return 'image';
+    if (mimeType.startsWith('video/')) return 'video';
+    if (mimeType === 'application/pdf' || /\.(pdf|doc|docx|xls|xlsx|ppt|pptx)$/i.test(fileName)) return 'document';
+    return 'file';
+  };
+
+  const getMediaPrefix = (type: MessageAttachment['attachmentType']) => {
+    if (type === 'audio') return 'AUDIO';
+    if (type === 'image') return 'IMAGE';
+    if (type === 'video') return 'VIDEO';
+    return 'FILE';
+  };
+
+  const buildLegacyMediaText = (type: MessageAttachment['attachmentType'], url: string) => {
+    const prefix = getMediaPrefix(type);
+    return `[${prefix}]${url}`;
+  };
+
+  const uploadPersistentFile = async (file: File | Blob, fallbackName: string): Promise<UploadedFilePayload> => {
+    const formData = new FormData();
+    formData.append('file', file, fallbackName);
+
+    const uploadRes = await fetch('/api/upload', {
+      method: 'POST',
+      body: formData
+    });
+    const uploadData = await uploadRes.json();
+
+    if (!uploadData.success) throw new Error(uploadData.error || 'Erro ao enviar arquivo.');
+
+    return {
+      url: uploadData.url,
+      bucket: uploadData.bucket || 'chat-media',
+      path: uploadData.path || uploadData.url,
+      originalName: uploadData.originalName || fallbackName,
+      fileName: uploadData.fileName || fallbackName,
+      mimeType: uploadData.mimeType || 'application/octet-stream',
+      size: uploadData.size || 0,
+      storageProvider: uploadData.storageProvider || 'supabase'
+    };
+  };
+
+  const createPersistentMessage = async ({
+    ticketId,
+    text,
+    sender,
+    upload
+  }: {
+    ticketId: string;
+    text: string;
+    sender: 'customer' | 'agent';
+    upload?: UploadedFilePayload;
+  }) => {
+    const ticket = tickets.find(t => t.id === ticketId);
+    const attachmentType = upload ? getAttachmentType(upload.mimeType, upload.originalName || upload.fileName) : undefined;
+
+    const payload = {
+      ticket_id: ticketId,
+      text,
+      sender,
+      message_type: attachmentType || 'text',
+      media_url: upload?.url || null,
+      media_mime_type: upload?.mimeType || null,
+      media_file_name: upload?.originalName || null,
+      media_size: upload?.size || null
+    };
+
+    let insertedMessageId: string | undefined;
+    const { data: msgData, error: msgError } = await supabase
+      .from('messages')
+      .insert(payload)
+      .select('id')
+      .single();
+
+    if (msgError) {
+      const { data: fallbackMsg, error: fallbackError } = await supabase
+        .from('messages')
+        .insert({
+          ticket_id: ticketId,
+          text,
+          sender
+        })
+        .select('id')
+        .single();
+
+      if (fallbackError) throw fallbackError;
+      insertedMessageId = fallbackMsg.id;
+    } else {
+      insertedMessageId = msgData.id;
+    }
+
+    if (upload && insertedMessageId && attachmentType) {
+      const { error: attachmentError } = await supabase
+        .from('message_attachments')
+        .insert({
+          message_id: insertedMessageId,
+          ticket_id: ticketId,
+          customer_id: ticket?.customerId,
+          bucket: upload.bucket,
+          storage_path: upload.path,
+          public_url: upload.url,
+          file_name: upload.fileName,
+          original_name: upload.originalName,
+          mime_type: upload.mimeType,
+          file_size: upload.size,
+          attachment_type: attachmentType,
+          uploaded_by: currentUser?.id
+        });
+
+      if (attachmentError) {
+        console.warn('[ATTACHMENTS] Metadata table unavailable or insert failed:', attachmentError.message);
+      }
+    }
+
+    await supabase
+      .from('tickets')
+      .update({ last_message: text, updated_at: new Date().toISOString() })
+      .eq('id', ticketId);
+  };
 
   // Authentication and Session Management
   useEffect(() => {
@@ -451,14 +584,16 @@ export default function App() {
         { data: custs },
         { data: ticks },
         { data: invs },
-        { data: docs }
+        { data: docs },
+        { data: messageAttachments }
       ] = await Promise.all([
         supabase.from('departments').select('*'),
         supabase.from('profiles').select('*'),
         supabase.from('customers').select('*'),
         supabase.from('tickets').select('*, messages(*), internal_messages(*)'),
         supabase.from('invitations').select('*'),
-        supabase.from('ticket_documents').select('*')
+        supabase.from('ticket_documents').select('*'),
+        supabase.from('message_attachments').select('*')
       ]);
 
       if (depts) {
@@ -486,6 +621,24 @@ export default function App() {
         createdAt: new Date(d.created_at)
       }));
 
+      const attachments: MessageAttachment[] = (messageAttachments || []).map((a: any) => ({
+        id: a.id,
+        messageId: a.message_id,
+        internalMessageId: a.internal_message_id,
+        ticketId: a.ticket_id,
+        customerId: a.customer_id,
+        bucket: a.bucket,
+        storagePath: a.storage_path,
+        publicUrl: a.public_url,
+        fileName: a.file_name,
+        originalName: a.original_name,
+        mimeType: a.mime_type,
+        fileSize: a.file_size,
+        attachmentType: a.attachment_type,
+        uploadedBy: a.uploaded_by,
+        createdAt: new Date(a.created_at)
+      }));
+
       if (ticks) {
         const formattedTickets: Ticket[] = ticks.map(t => ({
           id: t.id,
@@ -499,6 +652,12 @@ export default function App() {
           messages: (t.messages || []).map((m: any) => ({ 
             ...m, 
             timestamp: new Date(m.timestamp),
+            messageType: m.message_type,
+            mediaUrl: m.media_url,
+            mediaMimeType: m.media_mime_type,
+            mediaFileName: m.media_file_name,
+            mediaSize: m.media_size,
+            attachments: attachments.filter(a => a.messageId === m.id),
             isFlagged: m.is_flagged,
             flaggedBy: m.flagged_by,
             flaggedAt: m.flagged_at ? new Date(m.flagged_at) : undefined
@@ -827,31 +986,19 @@ export default function App() {
         const audioBlob = new Blob(chunksRef.current, { type: 'audio/mpeg' });
         console.log('[AUDIO] Audio blob created, size:', audioBlob.size);
         
-        // Upload to server
-        const formData = new FormData();
-        formData.append('file', audioBlob, 'recording.mp3');
-        
         try {
-          const uploadRes = await fetch('/api/upload', {
-            method: 'POST',
-            body: formData
-          });
-          const uploadData = await uploadRes.json();
-          
-          if (!uploadData.success) throw new Error(uploadData.error);
-          
+          const uploadData = await uploadPersistentFile(audioBlob, `audio-${Date.now()}.mp3`);
           const audioUrl = uploadData.url;
           console.log('[AUDIO] Upload successful, URL:', audioUrl);
           
           if (selectedTicketId) {
-            const { error } = await supabase
-              .from('messages')
-              .insert({
-                ticket_id: selectedTicketId,
-                text: `🎤 [AUDIO]${audioUrl}`,
-                sender: 'agent'
-              });
-            if (error) console.error('[AUDIO] Error saving audio message:', error);
+            const messageText = buildLegacyMediaText('audio', audioUrl);
+            await createPersistentMessage({
+              ticketId: selectedTicketId,
+              text: messageText,
+              sender: 'agent',
+              upload: uploadData
+            });
 
             // Also send to WhatsApp
             const ticket = tickets.find(t => t.id === selectedTicketId);
@@ -863,7 +1010,7 @@ export default function App() {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ 
                   to: customer.phone, 
-                  message: `🎤 [AUDIO]${audioUrl}` 
+                  message: messageText
                 })
               });
             }
@@ -922,35 +1069,18 @@ export default function App() {
     const file = e.target.files?.[0];
     if (!file || !selectedTicketId) return;
 
-    const isImage = file.type.startsWith('image/');
-    const prefix = isImage ? '📷 [IMAGE]' : '📄 [FILE]';
-
-    // Upload to server
-    const formData = new FormData();
-    formData.append('file', file);
-
     try {
-      const uploadRes = await fetch('/api/upload', {
-        method: 'POST',
-        body: formData
-      });
-      const uploadData = await uploadRes.json();
-      
-      if (!uploadData.success) throw new Error(uploadData.error);
-      
+      const uploadData = await uploadPersistentFile(file, file.name);
       const fileUrl = uploadData.url;
+      const attachmentType = getAttachmentType(uploadData.mimeType, uploadData.originalName || file.name);
+      const messageText = buildLegacyMediaText(attachmentType, fileUrl);
 
-      const { data: msgData, error: msgError } = await supabase
-        .from('messages')
-        .insert({
-          ticket_id: selectedTicketId,
-          text: `${prefix}${fileUrl}`,
-          sender: 'agent'
-        })
-        .select()
-        .single();
-
-      if (msgError) throw msgError;
+      await createPersistentMessage({
+        ticketId: selectedTicketId,
+        text: messageText,
+        sender: 'agent',
+        upload: uploadData
+      });
 
       // Also send to WhatsApp
       const ticket = tickets.find(t => t.id === selectedTicketId);
@@ -961,7 +1091,7 @@ export default function App() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ 
             to: customer.phone, 
-            message: `${prefix}${fileUrl}` 
+            message: messageText
           })
         });
       }
@@ -1168,10 +1298,10 @@ export default function App() {
 
       // If flagged, also send to internal chat automatically
       if (isFlagged && !isInternal) {
-        const contextText = msg.text.startsWith('🎤') ? '[Áudio]' : 
-                           msg.text.startsWith('📷') ? '[Imagem]' : 
-                           msg.text.startsWith('🎥') ? '[Vídeo]' : 
-                           msg.text.startsWith('📄') ? '[Arquivo]' : 
+        const contextText = msg.text.includes('[AUDIO]') ? '[Audio]' : 
+                           msg.text.includes('[IMAGE]') ? '[Imagem]' : 
+                           msg.text.includes('[VIDEO]') ? '[Video]' : 
+                           msg.text.includes('[FILE]') ? '[Arquivo]' : 
                            `"${msg.text.substring(0, 100)}${msg.text.length > 100 ? '...' : ''}"`;
 
         await supabase
@@ -1399,8 +1529,14 @@ export default function App() {
   );
 
   const renderMessageText = (text: string) => {
-    if (text.startsWith('🎤 [AUDIO]')) {
-      const url = text.replace('🎤 [AUDIO]', '');
+    const normalizedText = text
+      .replace(/^🎤 \[AUDIO\]/, '[AUDIO]')
+      .replace(/^📷 \[IMAGE\]/, '[IMAGE]')
+      .replace(/^🎥 \[VIDEO\]/, '[VIDEO]')
+      .replace(/^📄 \[FILE\]/, '[FILE]');
+
+    if (normalizedText.startsWith('[AUDIO]')) {
+      const url = normalizedText.replace('[AUDIO]', '');
       return (
         <div className="flex flex-col gap-2 py-1 min-w-[240px]">
           <div className="flex items-center gap-2 text-indigo-600 font-bold text-[10px] uppercase tracking-wider">
@@ -1412,16 +1548,16 @@ export default function App() {
         </div>
       );
     }
-    if (text.startsWith('📷 [IMAGE]')) {
-      const url = text.replace('📷 [IMAGE]', '');
+    if (normalizedText.startsWith('[IMAGE]')) {
+      const url = normalizedText.replace('[IMAGE]', '');
       return (
         <div className="flex flex-col gap-2 py-1">
           <img src={url} alt="Imagem do cliente" className="max-w-full rounded-lg shadow-sm border border-slate-100" referrerPolicy="no-referrer" />
         </div>
       );
     }
-    if (text.startsWith('🎥 [VIDEO]')) {
-      const url = text.replace('🎥 [VIDEO]', '');
+    if (normalizedText.startsWith('[VIDEO]')) {
+      const url = normalizedText.replace('[VIDEO]', '');
       return (
         <div className="flex flex-col gap-2 py-1">
           <video controls className="max-w-full rounded-lg shadow-sm border border-slate-100">
@@ -1430,8 +1566,8 @@ export default function App() {
         </div>
       );
     }
-    if (text.startsWith('📄 [FILE]')) {
-      const url = text.replace('📄 [FILE]', '');
+    if (normalizedText.startsWith('[FILE]')) {
+      const url = normalizedText.replace('[FILE]', '');
       const fileName = url.split('/').pop() || 'arquivo';
       return (
         <div className="flex flex-col gap-2 py-1">
