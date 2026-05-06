@@ -73,6 +73,8 @@ export default function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
+  const [authSubmitting, setAuthSubmitting] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [authMode, setAuthMode] = useState<'login' | 'signup'>('login');
@@ -115,7 +117,7 @@ export default function App() {
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
       if (session) {
-        fetchUserProfile(session.user.id);
+        fetchUserProfile(session.user.id, session.user.email || '');
       } else {
         setAuthLoading(false);
       }
@@ -125,7 +127,7 @@ export default function App() {
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       setSession(session);
       if (session) {
-        fetchUserProfile(session.user.id);
+        fetchUserProfile(session.user.id, session.user.email || '');
       } else {
         setCurrentUser(null);
         setAuthLoading(false);
@@ -135,7 +137,19 @@ export default function App() {
     return () => subscription.unsubscribe();
   }, []);
 
-  const fetchUserProfile = async (userId: string) => {
+  const withTimeout = async <T,>(promise: Promise<T>, timeoutMs = 15000): Promise<T> => {
+    let timeoutId: ReturnType<typeof setTimeout>;
+    const timeout = new Promise<never>((_, reject) => {
+      timeoutId = setTimeout(() => reject(new Error('Tempo esgotado ao conectar com o Supabase.')), timeoutMs);
+    });
+    try {
+      return await Promise.race([promise, timeout]);
+    } finally {
+      clearTimeout(timeoutId!);
+    }
+  };
+
+  const fetchUserProfile = async (userId: string, userEmail: string = '') => {
     try {
       const { data, error } = await supabase
         .from('profiles')
@@ -154,58 +168,88 @@ export default function App() {
           departmentId: data.department_id
         });
       } else {
-        // Fallback for new users without profile yet
-        setAuthMode('signup');
+        const fallbackName = userEmail ? userEmail.split('@')[0] : 'Usuario';
+        const { data: createdProfile, error: createProfileError } = await supabase
+          .from('profiles')
+          .insert({
+            id: userId,
+            name: fallbackName,
+            email: userEmail,
+            role: 'Colaborador'
+          })
+          .select()
+          .maybeSingle();
+
+        if (createProfileError) throw createProfileError;
+
+        if (createdProfile) {
+          setCurrentUser({
+            id: createdProfile.id,
+            name: createdProfile.name,
+            email: createdProfile.email,
+            role: createdProfile.role as UserRole,
+            departmentId: createdProfile.department_id
+          });
+        }
       }
     } catch (err) {
       console.error('Error fetching profile:', err);
+      setAuthError(err instanceof Error ? err.message : 'Erro ao carregar perfil do usuario.');
     } finally {
       setAuthLoading(false);
+      setAuthSubmitting(false);
     }
   };
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    setLoading(true);
+    setAuthSubmitting(true);
+    setAuthError(null);
     try {
-      const { error } = await supabase.auth.signInWithPassword({ email, password });
+      const { data, error } = await withTimeout(
+        supabase.auth.signInWithPassword({ email: email.trim(), password })
+      );
       if (error) throw error;
+      if (data.user) {
+        await fetchUserProfile(data.user.id, data.user.email || email.trim());
+      }
     } catch (err: any) {
-      alert(err.message || 'Erro ao fazer login');
+      setAuthError(err.message || 'Erro ao fazer login');
     } finally {
-      setLoading(false);
+      setAuthSubmitting(false);
     }
   };
 
   const handleSignUp = async (e: React.FormEvent) => {
     e.preventDefault();
-    setLoading(true);
+    setAuthSubmitting(true);
+    setAuthError(null);
     try {
-      const { data, error } = await supabase.auth.signUp({ 
-        email, 
+      const { data, error } = await withTimeout(supabase.auth.signUp({ 
+        email: email.trim(), 
         password,
         options: {
           data: {
-            full_name: email.split('@')[0]
+            full_name: email.trim().split('@')[0]
           }
         }
-      });
+      }));
       if (error) throw error;
 
       if (data.user) {
         // Create initial profile
         await supabase.from('profiles').insert({
           id: data.user.id,
-          name: email.split('@')[0],
-          email: email,
+          name: email.trim().split('@')[0],
+          email: email.trim(),
           role: 'Colaborador'
         });
       }
       alert('Cadastro realizado! Verifique seu e-mail para confirmar.');
     } catch (err: any) {
-      alert(err.message || 'Erro ao cadastrar');
+      setAuthError(err.message || 'Erro ao cadastrar');
     } finally {
-      setLoading(false);
+      setAuthSubmitting(false);
     }
   };
 
@@ -1396,6 +1440,11 @@ export default function App() {
           </div>
 
           <form onSubmit={authMode === 'login' ? handleLogin : handleSignUp} className="space-y-4">
+            {authError && (
+              <div className="p-3 bg-red-50 border border-red-100 rounded-xl text-red-700 text-xs font-medium">
+                {authError}
+              </div>
+            )}
             <div>
               <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5 ml-1">E-mail</label>
               <div className="relative">
@@ -1427,16 +1476,19 @@ export default function App() {
 
             <button 
               type="submit"
-              disabled={loading}
+              disabled={authSubmitting}
               className="w-full bg-indigo-600 text-white font-bold py-3.5 rounded-xl hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-100 active:scale-[0.98] disabled:opacity-50 mt-4"
             >
-              {loading ? "Processando..." : (authMode === 'login' ? "Entrar na Conta" : "Criar Minha Conta")}
+              {authSubmitting ? "Processando..." : (authMode === 'login' ? "Entrar na Conta" : "Criar Minha Conta")}
             </button>
           </form>
 
           <div className="mt-8 pt-6 border-t border-slate-50 flex flex-col items-center gap-4">
             <button 
-              onClick={() => setAuthMode(authMode === 'login' ? 'signup' : 'login')}
+              onClick={() => {
+                setAuthError(null);
+                setAuthMode(authMode === 'login' ? 'signup' : 'login');
+              }}
               className="text-sm font-bold text-indigo-600 hover:text-indigo-700"
             >
               {authMode === 'login' ? "Ainda não tem conta? Cadastrar" : "Já tem uma conta? Entrar"}

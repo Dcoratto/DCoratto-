@@ -91,9 +91,22 @@ async function startServer() {
     ? process.env.AUTO_START_WHATSAPP !== 'false'
     : process.env.NODE_ENV !== 'production';
 
+  app.use((req, _res, next) => {
+    console.log(`[HTTP] ${req.method} ${req.originalUrl}`);
+    next();
+  });
+
   app.use(express.json());
   app.get('/health', (_req, res) => {
     res.status(200).json({ ok: true });
+  });
+  app.get('/ready', (_req, res) => {
+    res.status(200).json({
+      ok: true,
+      env: process.env.NODE_ENV || 'development',
+      port: PORT,
+      whatsappAutoStart: AUTO_START_WHATSAPP
+    });
   });
 
   const getPublicBaseUrl = (req?: express.Request) => {
