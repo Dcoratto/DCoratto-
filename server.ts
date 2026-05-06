@@ -1,13 +1,6 @@
 import express from "express";
 import path from "path";
 import { createServer as createViteServer } from "vite";
-import makeWASocket, { 
-  DisconnectReason, 
-  useMultiFileAuthState,
-  fetchLatestBaileysVersion,
-  makeCacheableSignalKeyStore,
-  downloadMediaMessage
-} from '@whiskeysockets/baileys';
 import QRCode from 'qrcode';
 import pino from 'pino';
 import { Boom } from '@hapi/boom';
@@ -25,8 +18,7 @@ process.on('unhandledRejection', (reason, promise) => {
 
 process.on('uncaughtException', (err) => {
   console.error('[CRITICAL] Uncaught Exception thrown:', err);
-  // Give some time for logs to be written
-  setTimeout(() => process.exit(1), 1000);
+  // Keep process alive in production to avoid restart loops/502.
 });
 
 // Ensure media directory exists
@@ -95,6 +87,9 @@ async function startServer() {
   const app = express();
   const PORT = Number(process.env.PORT || 3000);
   const APP_URL = process.env.APP_URL;
+  const AUTO_START_WHATSAPP = process.env.AUTO_START_WHATSAPP
+    ? process.env.AUTO_START_WHATSAPP !== 'false'
+    : process.env.NODE_ENV !== 'production';
 
   app.use(express.json());
   app.get('/health', (_req, res) => {
@@ -162,6 +157,15 @@ async function startServer() {
     }, 120000);
 
     try {
+      const {
+        default: makeWASocket,
+        DisconnectReason,
+        useMultiFileAuthState,
+        fetchLatestBaileysVersion,
+        makeCacheableSignalKeyStore,
+        downloadMediaMessage
+      } = await import('@whiskeysockets/baileys');
+
       // Use a more robust path for auth info
       const authPath = path.join(process.cwd(), 'auth_info_baileys');
       const { state, saveCreds } = await useMultiFileAuthState(authPath);
@@ -465,8 +469,16 @@ async function startServer() {
   }
 }
 
-  // Start WhatsApp connection
-  connectToWhatsApp();
+  // Start WhatsApp connection (non-blocking, resilient)
+  if (AUTO_START_WHATSAPP) {
+    try {
+      connectToWhatsApp();
+    } catch (err) {
+      console.error('[WA] Failed to start WhatsApp bootstrap:', err);
+    }
+  } else {
+    console.log('[WA] Auto-start disabled via AUTO_START_WHATSAPP=false');
+  }
 
   // Test Supabase Connection
   (async () => {
@@ -742,6 +754,7 @@ async function startServer() {
     console.log(`[SERVER] Started successfully on port ${PORT}`);
     console.log(`[SERVER] Environment: ${process.env.NODE_ENV || 'development'}`);
     console.log(`[SERVER] Supabase URL: ${supabaseUrl}`);
+    console.log(`[SERVER] WhatsApp auto-start: ${AUTO_START_WHATSAPP ? 'enabled' : 'disabled'}`);
   });
 }
 

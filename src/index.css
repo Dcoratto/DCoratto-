@@ -11,6 +11,121 @@
   }
 }
 
+.dark-theme {
+  color-scheme: dark;
+}
+
+.dark-theme body {
+  background: #020617;
+  color: #e2e8f0;
+}
+
+.dark-theme .bg-white {
+  background-color: #0f172a !important;
+}
+
+.dark-theme .bg-slate-50 {
+  background-color: #020617 !important;
+}
+
+.dark-theme .bg-slate-100 {
+  background-color: #111827 !important;
+}
+
+.dark-theme .hover\:bg-slate-100:hover {
+  background-color: #1f2937 !important;
+}
+
+.dark-theme .hover\:bg-slate-200:hover {
+  background-color: #334155 !important;
+}
+
+.dark-theme .text-slate-900,
+.dark-theme .text-slate-800,
+.dark-theme .text-slate-700,
+.dark-theme .text-slate-600,
+.dark-theme .text-slate-500,
+.dark-theme .text-slate-400,
+.dark-theme .text-slate-300 {
+  color: #e2e8f0 !important;
+}
+
+.dark-theme .border-slate-50,
+.dark-theme .border-slate-100,
+.dark-theme .border-slate-200 {
+  border-color: #334155 !important;
+}
+
+.dark-theme .shadow-sm,
+.dark-theme .shadow-lg,
+.dark-theme .shadow-xl {
+  box-shadow: none !important;
+}
+
+.dark-theme input,
+.dark-theme textarea,
+.dark-theme select {
+  background-color: #0b1220 !important;
+  color: #e2e8f0 !important;
+  border-color: #334155 !important;
+}
+
+.dark-theme .bg-indigo-50 {
+  background-color: #1e1b4b !important;
+}
+
+.dark-theme .text-indigo-900 {
+  color: #c7d2fe !important;
+}
+
+.dark-theme .border-indigo-100 {
+  border-color: #3730a3 !important;
+}
+
+.dark-theme .bg-green-50 {
+  background-color: #052e16 !important;
+}
+
+.dark-theme .text-green-700,
+.dark-theme .text-green-600 {
+  color: #bbf7d0 !important;
+}
+
+.dark-theme .border-green-100,
+.dark-theme .border-green-200 {
+  border-color: #166534 !important;
+}
+
+.dark-theme .bg-amber-50 {
+  background-color: #451a03 !important;
+}
+
+.dark-theme .text-amber-700 {
+  color: #fde68a !important;
+}
+
+.dark-theme .border-amber-100 {
+  border-color: #92400e !important;
+}
+
+.dark-theme .bg-red-50 {
+  background-color: #450a0a !important;
+}
+
+.dark-theme .text-red-700,
+.dark-theme .text-red-600 {
+  color: #fecaca !important;
+}
+
+.dark-theme .border-red-100,
+.dark-theme .border-red-200 {
+  border-color: #991b1b !important;
+}
+
+.dark-theme .bg-slate-900\/10 {
+  background-color: rgba(2, 6, 23, 0.55) !important;
+}
+
 /* Custom scrollbar */
 ::-webkit-scrollbar {
   width: 6px;

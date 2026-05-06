@@ -47,7 +47,9 @@ import {
   AlertTriangle,
   Folder,
   Plus,
-  Quote as QuoteIcon
+  Quote as QuoteIcon,
+  Moon,
+  Sun
 } from 'lucide-react';
 import { format } from 'date-fns';
 import { cn } from './lib/utils';
@@ -57,6 +59,16 @@ import { motion, AnimatePresence } from 'motion/react';
 import { Session } from '@supabase/supabase-js';
 
 export default function App() {
+  const [isDarkMode, setIsDarkMode] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    return localStorage.getItem('theme') === 'dark';
+  });
+
+  useEffect(() => {
+    document.documentElement.classList.toggle('dark-theme', isDarkMode);
+    localStorage.setItem('theme', isDarkMode ? 'dark' : 'light');
+  }, [isDarkMode]);
+
   // Authentication State
   const [session, setSession] = useState<Session | null>(null);
   const [currentUser, setCurrentUser] = useState<User | null>(null);
@@ -1342,7 +1354,15 @@ export default function App() {
 
   if (authLoading) {
     return (
-      <div className="min-h-screen bg-slate-50 flex items-center justify-center">
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center relative">
+        <button
+          onClick={() => setIsDarkMode(!isDarkMode)}
+          className="absolute top-4 right-4 p-2 rounded-xl bg-slate-200 text-slate-700 hover:bg-slate-300 transition-colors"
+          aria-label="Alternar tema"
+          title={isDarkMode ? 'Ativar tema claro' : 'Ativar tema escuro'}
+        >
+          {isDarkMode ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+        </button>
         <div className="flex flex-col items-center gap-4">
           <div className="w-12 h-12 border-4 border-indigo-600/20 border-t-indigo-600 rounded-full animate-spin" />
           <p className="text-slate-400 font-medium animate-pulse">Iniciando sistema seguro...</p>
@@ -1353,7 +1373,15 @@ export default function App() {
 
   if (!session || !currentUser) {
     return (
-      <div className="min-h-screen bg-slate-50 flex items-center justify-center p-6">
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center p-6 relative">
+        <button
+          onClick={() => setIsDarkMode(!isDarkMode)}
+          className="absolute top-4 right-4 p-2 rounded-xl bg-slate-200 text-slate-700 hover:bg-slate-300 transition-colors"
+          aria-label="Alternar tema"
+          title={isDarkMode ? 'Ativar tema claro' : 'Ativar tema escuro'}
+        >
+          {isDarkMode ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+        </button>
         <motion.div 
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
@@ -1424,6 +1452,14 @@ export default function App() {
 
   return (
     <div className="flex h-screen bg-slate-50 text-slate-900 font-sans overflow-hidden">
+      <button
+        onClick={() => setIsDarkMode(!isDarkMode)}
+        className="fixed top-4 right-4 z-[80] p-2 rounded-xl bg-slate-200 text-slate-700 hover:bg-slate-300 transition-colors"
+        aria-label="Alternar tema"
+        title={isDarkMode ? 'Ativar tema claro' : 'Ativar tema escuro'}
+      >
+        {isDarkMode ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+      </button>
       {/* Sidebar Navigation */}
       <aside className="w-20 bg-white border-r border-slate-200 flex flex-col items-center py-6 gap-8 relative">
         {!isOnline && (
