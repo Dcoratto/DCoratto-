@@ -93,9 +93,20 @@ async function uploadToSupabase(buffer: Buffer, fileName: string, mimeType: stri
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const PORT = Number(process.env.PORT || 3000);
+  const APP_URL = process.env.APP_URL;
 
   app.use(express.json());
+
+  const getPublicBaseUrl = (req?: express.Request) => {
+    if (APP_URL) return APP_URL.replace(/\/$/, '');
+    if (req) {
+      const protocol = req.headers['x-forwarded-proto']?.toString() || req.protocol || 'http';
+      const host = req.headers.host;
+      if (host) return `${protocol}://${host}`;
+    }
+    return `http://localhost:${PORT}`;
+  };
 
   // WhatsApp Connection Logic (Baileys)
   let sock: any = null;
@@ -604,7 +615,7 @@ async function startServer() {
             }
           }
           // Fallback to text if file not found or external URL (Baileys can handle URLs too sometimes)
-          const finalUrl = (url.startsWith('http') || url.startsWith('blob:')) ? url : `http://localhost:3000${url}`;
+          const finalUrl = (url.startsWith('http') || url.startsWith('blob:')) ? url : `${getPublicBaseUrl(req)}${url}`;
           if (finalUrl.startsWith('blob:')) {
             console.error('[WA] Cannot send blob URL to WhatsApp. Client must upload file first.');
             return res.status(400).json({ success: false, error: 'Cannot send blob URL' });
@@ -620,7 +631,7 @@ async function startServer() {
               return res.json({ success: true, status: 'sent' });
             }
           }
-          const finalUrl = (url.startsWith('http') || url.startsWith('blob:')) ? url : `http://localhost:3000${url}`;
+          const finalUrl = (url.startsWith('http') || url.startsWith('blob:')) ? url : `${getPublicBaseUrl(req)}${url}`;
           if (finalUrl.startsWith('blob:')) {
             console.error('[WA] Cannot send blob URL to WhatsApp. Client must upload file first.');
             return res.status(400).json({ success: false, error: 'Cannot send blob URL' });
@@ -628,7 +639,7 @@ async function startServer() {
           await sock.sendMessage(jid, { audio: { url: finalUrl }, mimetype: 'audio/mp4', ptt: true });
         } else if (message.startsWith('🎥 [VIDEO]')) {
           const url = message.replace('🎥 [VIDEO]', '');
-          const finalUrl = (url.startsWith('http') || url.startsWith('blob:')) ? url : `http://localhost:3000${url}`;
+          const finalUrl = (url.startsWith('http') || url.startsWith('blob:')) ? url : `${getPublicBaseUrl(req)}${url}`;
           if (finalUrl.startsWith('blob:')) {
             console.error('[WA] Cannot send blob URL to WhatsApp. Client must upload file first.');
             return res.status(400).json({ success: false, error: 'Cannot send blob URL' });
@@ -636,7 +647,7 @@ async function startServer() {
           await sock.sendMessage(jid, { video: { url: finalUrl } });
         } else if (message.startsWith('📄 [FILE]')) {
           const url = message.replace('📄 [FILE]', '');
-          const finalUrl = (url.startsWith('http') || url.startsWith('blob:')) ? url : `http://localhost:3000${url}`;
+          const finalUrl = (url.startsWith('http') || url.startsWith('blob:')) ? url : `${getPublicBaseUrl(req)}${url}`;
           if (finalUrl.startsWith('blob:')) {
             console.error('[WA] Cannot send blob URL to WhatsApp. Client must upload file first.');
             return res.status(400).json({ success: false, error: 'Cannot send blob URL' });

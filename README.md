@@ -2,19 +2,39 @@
 <img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
 </div>
 
-# Run and deploy your AI Studio app
+# Deploy Guide
 
-This contains everything you need to run your app locally.
+Projeto React (Vite) + servidor Express no `server.ts`.
 
-View your app in AI Studio: https://ai.studio/apps/268ab97f-1b49-4709-b39e-bd7bd3187a04
+## Requisitos
 
-## Run Locally
+- Node.js 20+
+- NPM 10+
 
-**Prerequisites:**  Node.js
+## Variaveis de ambiente
 
+Copie `.env.example` para `.env` e preencha:
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+- `VITE_SUPABASE_URL`
+- `VITE_SUPABASE_ANON_KEY`
+- `GEMINI_API_KEY` (se usar Gemini)
+- `APP_URL` (URL publica da aplicacao em producao)
+- `PORT` (opcional, padrao: `3000`)
+- `WHATSAPP_API_KEY`, `WHATSAPP_PHONE_NUMBER_ID`, `RESEND_API_KEY` (opcionais)
+
+## Rodar local
+
+1. `npm install`
+2. `npm run dev`
+
+## Build de producao
+
+1. `npm run lint`
+2. `npm run build`
+
+## Subir em producao
+
+- Linux/macOS: `npm run start`
+- Windows: `npm run start:win`
+
+O servidor expoe a SPA compilada em `dist/` e a API no mesmo processo.
