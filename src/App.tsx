@@ -59,6 +59,8 @@ import { motion, AnimatePresence } from 'motion/react';
 import { Session } from '@supabase/supabase-js';
 
 export default function App() {
+  const officialLogoPath = '/brand/dcoratto-logo.svg';
+
   const [isDarkMode, setIsDarkMode] = useState(() => {
     if (typeof window === 'undefined') return false;
     return localStorage.getItem('theme') === 'dark';
@@ -1627,10 +1629,10 @@ export default function App() {
           className="w-full max-w-md bg-white p-8 rounded-3xl shadow-xl border border-slate-100"
         >
           <div className="flex flex-col items-center mb-8">
-            <div className="w-16 h-16 bg-indigo-600 rounded-2xl flex items-center justify-center mb-4 shadow-lg shadow-indigo-200">
-              <ShieldCheck className="w-8 h-8 text-white" />
+            <div className="w-20 h-20 bg-white rounded-2xl flex items-center justify-center mb-4 shadow-lg shadow-slate-200 border border-slate-100 overflow-hidden">
+              <img src={officialLogoPath} alt="DCoratto" className="w-full h-full object-contain p-2" />
             </div>
-            <h1 className="text-2xl font-bold text-slate-800">WhatsApp CRM</h1>
+            <h1 className="text-2xl font-bold text-slate-800">DCoratto</h1>
             <p className="text-slate-400 text-sm">Estrutura robusta de atendimento</p>
           </div>
 
@@ -1716,8 +1718,8 @@ export default function App() {
             </div>
           </div>
         )}
-        <div className="w-12 h-12 bg-indigo-600 rounded-xl flex items-center justify-center text-white shadow-lg shadow-indigo-200">
-          <MessageSquare className="w-6 h-6" />
+        <div className="w-12 h-12 bg-white rounded-xl flex items-center justify-center shadow-lg shadow-slate-200 border border-slate-100 overflow-hidden">
+          <img src={officialLogoPath} alt="DCoratto" className="w-full h-full object-contain p-1.5" />
         </div>
         
         <nav className="flex flex-col gap-4 flex-1">
