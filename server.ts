@@ -97,6 +97,9 @@ async function startServer() {
   const APP_URL = process.env.APP_URL;
 
   app.use(express.json());
+  app.get('/health', (_req, res) => {
+    res.status(200).json({ ok: true });
+  });
 
   const getPublicBaseUrl = (req?: express.Request) => {
     if (APP_URL) return APP_URL.replace(/\/$/, '');
@@ -721,10 +724,18 @@ async function startServer() {
     app.use(vite.middlewares);
   } else {
     const distPath = path.join(process.cwd(), 'dist');
-    app.use(express.static(distPath));
-    app.get('*', (req, res) => {
-      res.sendFile(path.join(distPath, 'index.html'));
-    });
+    const hasDist = fs.existsSync(path.join(distPath, 'index.html'));
+    if (hasDist) {
+      app.use(express.static(distPath));
+      app.get('*', (req, res) => {
+        res.sendFile(path.join(distPath, 'index.html'));
+      });
+    } else {
+      console.warn('[SERVER] dist/index.html not found. Run "npm run build" before start.');
+      app.get('/', (_req, res) => {
+        res.status(200).send('Server is running, but frontend is not built yet.');
+      });
+    }
   }
 
   app.listen(PORT, "0.0.0.0", () => {
