@@ -126,6 +126,8 @@ export default function App() {
     return ['admin', 'administrador', 'super admin', 'superadmin', 'super administrador', 'superadministrador'].includes(normalized);
   };
 
+  const isPrimaryAdminEmail = (userEmail?: string) => userEmail?.trim().toLowerCase() === AUTO_PROVISION_EMAIL;
+
   type UploadedFilePayload = {
     url: string;
     bucket: string;
@@ -276,7 +278,16 @@ export default function App() {
       if (error) throw error;
 
       if (data) {
-        const profileRole = data.role || (userEmail.toLowerCase() === AUTO_PROVISION_EMAIL ? 'Super Admin' : 'Colaborador');
+        const shouldPromotePrimaryAdmin = isPrimaryAdminEmail(data.email || userEmail) && !isAdminRole(data.role);
+        const profileRole = shouldPromotePrimaryAdmin ? 'Super Admin' : (data.role || 'Colaborador');
+
+        if (shouldPromotePrimaryAdmin) {
+          await supabase
+            .from('profiles')
+            .update({ role: 'Super Admin' })
+            .eq('id', userId);
+        }
+
         setCurrentUser({
           id: data.id,
           name: data.name,
@@ -286,7 +297,7 @@ export default function App() {
         });
       } else {
         const fallbackName = userEmail ? userEmail.split('@')[0] : 'Usuario';
-        const fallbackRole = userEmail.toLowerCase() === AUTO_PROVISION_EMAIL ? 'Super Admin' : 'Colaborador';
+        const fallbackRole = isPrimaryAdminEmail(userEmail) ? 'Super Admin' : 'Colaborador';
         const { data: createdProfile, error: createProfileError } = await supabase
           .from('profiles')
           .insert({
@@ -1530,8 +1541,16 @@ export default function App() {
       .replace(/^🎥 \[VIDEO\]/, '[VIDEO]')
       .replace(/^📄 \[FILE\]/, '[FILE]');
 
+    const renderExpiredMedia = () => (
+      <div className="flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-700">
+        <AlertCircle className="w-4 h-4 shrink-0" />
+        Mídia temporária expirada.
+      </div>
+    );
+
     if (normalizedText.startsWith('[AUDIO]')) {
       const url = normalizedText.replace('[AUDIO]', '');
+      if (url.startsWith('blob:')) return renderExpiredMedia();
       return (
         <div className="flex flex-col gap-2 py-1 min-w-[240px]">
           <div className="flex items-center gap-2 text-indigo-600 font-bold text-[10px] uppercase tracking-wider">
@@ -1545,6 +1564,7 @@ export default function App() {
     }
     if (normalizedText.startsWith('[IMAGE]')) {
       const url = normalizedText.replace('[IMAGE]', '');
+      if (url.startsWith('blob:')) return renderExpiredMedia();
       return (
         <div className="flex flex-col gap-2 py-1">
           <img src={url} alt="Imagem do cliente" className="max-w-full rounded-lg shadow-sm border border-slate-100" referrerPolicy="no-referrer" />
@@ -1553,6 +1573,7 @@ export default function App() {
     }
     if (normalizedText.startsWith('[VIDEO]')) {
       const url = normalizedText.replace('[VIDEO]', '');
+      if (url.startsWith('blob:')) return renderExpiredMedia();
       return (
         <div className="flex flex-col gap-2 py-1">
           <video controls className="max-w-full rounded-lg shadow-sm border border-slate-100">
@@ -1563,6 +1584,7 @@ export default function App() {
     }
     if (normalizedText.startsWith('[FILE]')) {
       const url = normalizedText.replace('[FILE]', '');
+      if (url.startsWith('blob:')) return renderExpiredMedia();
       const fileName = url.split('/').pop() || 'arquivo';
       return (
         <div className="flex flex-col gap-2 py-1">
