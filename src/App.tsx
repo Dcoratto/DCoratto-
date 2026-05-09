@@ -49,7 +49,8 @@ import {
   Plus,
   Quote as QuoteIcon,
   Moon,
-  Sun
+  Sun,
+  Bell
 } from 'lucide-react';
 import { format } from 'date-fns';
 import { cn } from './lib/utils';
@@ -60,6 +61,15 @@ import { Session } from '@supabase/supabase-js';
 
 export default function App() {
   const officialLogoPath = '/brand/dcoratto-logo.svg';
+
+  type AppNotification = {
+    id: string;
+    title: string;
+    body: string;
+    ticketId?: string;
+    createdAt: Date;
+    read: boolean;
+  };
 
   const [isDarkMode, setIsDarkMode] = useState(() => {
     if (typeof window === 'undefined') return false;
@@ -113,6 +123,11 @@ export default function App() {
   const [showFlaggedOnly, setShowFlaggedOnly] = useState(false);
   const [quotedMessageId, setQuotedMessageId] = useState<string | null>(null);
   const [isOnline, setIsOnline] = useState(navigator.onLine);
+  const [pendingTransfer, setPendingTransfer] = useState<{ ticketId: string; departmentId: string } | null>(null);
+  const [transferSubmitting, setTransferSubmitting] = useState(false);
+  const [transferSuccessMessage, setTransferSuccessMessage] = useState<string | null>(null);
+  const [notifications, setNotifications] = useState<AppNotification[]>([]);
+  const [showNotifications, setShowNotifications] = useState(false);
 
   const AUTO_PROVISION_EMAIL = 'dcorattoinovacao@gmail.com';
   const AUTO_PROVISION_PASSWORD = 'sobmedida';
@@ -125,6 +140,22 @@ export default function App() {
       .toLowerCase();
 
     return ['admin', 'administrador', 'super admin', 'superadmin', 'super administrador', 'superadministrador'].includes(normalized);
+  };
+
+  const getStandardDepartmentName = (departmentName?: string) => {
+    const normalized = (departmentName || '')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .trim()
+      .toLowerCase();
+
+    if (normalized.includes('vendas') || normalized.includes('comercial')) return 'Comercial';
+    if (normalized.includes('financeiro')) return 'Financeiro';
+    if (normalized.includes('projeto') || normalized.includes('liberacao')) return 'Liberação';
+    if (normalized.includes('producao') || normalized.includes('logistica')) return 'Logística';
+    if (normalized.includes('instalacao') || normalized.includes('montagem')) return 'Montagem';
+    if (normalized.includes('pos-venda') || normalized.includes('sucesso')) return 'Sucesso do Cliente';
+    return departmentName || '';
   };
 
   const isPrimaryAdminEmail = (userEmail?: string) => userEmail?.trim().toLowerCase() === AUTO_PROVISION_EMAIL;
@@ -521,26 +552,67 @@ export default function App() {
 
   const selectedTicket = tickets.find(t => t.id === selectedTicketId);
   const customer = selectedTicket ? customers.find(c => c.id === selectedTicket.customerId) : null;
+  const unreadNotifications = notifications.filter(notification => !notification.read).length;
+
+  const ticketsRef = useRef<Ticket[]>([]);
+  const customersRef = useRef<Customer[]>([]);
+  const departmentsRef = useRef<Department[]>([]);
+  const usersRef = useRef<User[]>([]);
+  const currentUserRef = useRef<User | null>(null);
+
+  useEffect(() => {
+    ticketsRef.current = tickets;
+  }, [tickets]);
+
+  useEffect(() => {
+    customersRef.current = customers;
+  }, [customers]);
+
+  useEffect(() => {
+    departmentsRef.current = departments;
+  }, [departments]);
+
+  useEffect(() => {
+    usersRef.current = users;
+  }, [users]);
+
+  useEffect(() => {
+    currentUserRef.current = currentUser;
+  }, [currentUser]);
 
   const isGlobalAdmin = (user?: User | null) => !!user && isAdminRole(user.role) && !user.departmentId;
   const isDepartmentChief = (user: User | null | undefined, departmentId?: string) => {
     if (!user || !departmentId || !isAdminRole(user.role)) return false;
     return isGlobalAdmin(user) || user.departmentId === departmentId;
   };
+  const canFollowTransferredTicket = (ticket: Ticket | null | undefined, user: User | null = currentUser) => {
+    if (!ticket || !user) return false;
+    return (ticket.internalMessages || []).some(message =>
+      message.senderId === user.id && message.text.includes('Ticket movido para o setor:')
+    );
+  };
   const canViewTicket = (ticket: Ticket, user: User | null) => {
     if (!user) return false;
     if (isGlobalAdmin(user)) return true;
     if (isDepartmentChief(user, ticket.departmentId)) return true;
+    if (canFollowTransferredTicket(ticket, user)) return true;
     return ticket.departmentId === user.departmentId;
   };
   const canManageTicketAssignment = (ticket: Ticket | null | undefined) => {
     if (!ticket) return false;
     return isDepartmentChief(currentUser, ticket.departmentId);
   };
+  const canSelfAssignTicket = (ticket: Ticket | null | undefined) => {
+    if (!ticket || !currentUser || isAdminRole(currentUser.role)) return false;
+    return ticket.departmentId === currentUser.departmentId && ticket.assignedTo !== currentUser.id;
+  };
   const canInteractWithTicket = (ticket: Ticket | null | undefined) => {
     if (!ticket || !currentUser) return false;
     if (canManageTicketAssignment(ticket)) return true;
     return ticket.departmentId === currentUser.departmentId && ticket.assignedTo === currentUser.id;
+  };
+  const canSendInternalMessage = (ticket: Ticket | null | undefined) => {
+    return canInteractWithTicket(ticket) || canFollowTransferredTicket(ticket);
   };
   const getDepartmentChief = (departmentId?: string) => {
     if (!departmentId) return null;
@@ -557,11 +629,27 @@ export default function App() {
       .filter(user => user.departmentId === departmentId && !isAdminRole(user.role))
       .sort((a, b) => a.name.localeCompare(b.name));
   };
+  const getDepartmentManagerTitle = (departmentIdOrName?: string) => {
+    const departmentName = departments.find(dept => dept.id === departmentIdOrName)?.name || departmentIdOrName || '';
+    const normalized = departmentName
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .trim()
+      .toLowerCase();
+
+    if (normalized.includes('comercial') || normalized.includes('vendas')) return 'Gestor Comercial';
+    if (normalized.includes('financeiro')) return 'Gestor Financeiro';
+    if (normalized.includes('liberacao') || normalized.includes('liberação') || normalized.includes('projeto')) return 'Gestor de Liberação';
+    if (normalized.includes('logistica') || normalized.includes('logística') || normalized.includes('producao') || normalized.includes('produção')) return 'Gestor de Logística';
+    if (normalized.includes('montagem') || normalized.includes('instalacao') || normalized.includes('instalação')) return 'Gestor de Montagem';
+    if (normalized.includes('sucesso') || normalized.includes('pos-venda') || normalized.includes('pós-venda')) return 'Gestor de Sucesso do Cliente';
+    return 'Gestor do Departamento';
+  };
   const getTicketAssigneeName = (ticket: Ticket) => {
     const assignedUser = users.find(user => user.id === ticket.assignedTo);
     if (assignedUser) return assignedUser.name;
     const chief = getDepartmentChief(ticket.departmentId);
-    return chief ? `${chief.name} (chefe)` : 'Chefe do departamento';
+    return chief ? `${chief.name} (${getDepartmentManagerTitle(ticket.departmentId)})` : getDepartmentManagerTitle(ticket.departmentId);
   };
   const departmentPalette = [
     { border: '#2563eb', bg: '#eff6ff', text: '#1d4ed8' },
@@ -587,9 +675,67 @@ export default function App() {
       document_upload: 'Documento enviado',
       media_upload: 'Mídia enviada',
       ticket_assigned: 'Cliente atribuído',
-      ticket_unassigned: 'Cliente voltou ao chefe'
+      ticket_unassigned: 'Cliente voltou ao Gestor'
     };
     return labels[action] || action;
+  };
+
+  const pushNotification = (notification: Omit<AppNotification, 'id' | 'createdAt' | 'read'>) => {
+    const newNotification: AppNotification = {
+      ...notification,
+      id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      createdAt: new Date(),
+      read: false
+    };
+
+    setNotifications(prev => [newNotification, ...prev].slice(0, 30));
+    setTransferSuccessMessage(notification.title);
+    window.setTimeout(() => setTransferSuccessMessage(null), 3000);
+  };
+
+  const getTicketCustomerName = (ticket?: Ticket | null) => {
+    if (!ticket) return 'Cliente';
+    return customersRef.current.find(item => item.id === ticket.customerId)?.name || ticket.title || 'Cliente';
+  };
+
+  const isCurrentUserDepartmentManager = (departmentId?: string) => {
+    const user = currentUserRef.current;
+    if (!user || !departmentId) return false;
+    return isAdminRole(user.role) && user.departmentId === departmentId;
+  };
+
+  const shouldNotifyCurrentUserAboutCustomerMessage = (ticket?: Ticket | null) => {
+    const user = currentUserRef.current;
+    if (!user || !ticket) return false;
+    if (ticket.assignedTo) return ticket.assignedTo === user.id;
+    return isCurrentUserDepartmentManager(ticket.departmentId);
+  };
+
+  const notifyNewCustomerMessage = (ticketId?: string) => {
+    const ticket = ticketsRef.current.find(item => item.id === ticketId);
+    if (!ticket || !shouldNotifyCurrentUserAboutCustomerMessage(ticket)) return;
+
+    pushNotification({
+      title: 'Nova mensagem do cliente',
+      body: `${getTicketCustomerName(ticket)} enviou uma nova mensagem.`,
+      ticketId: ticket.id
+    });
+  };
+
+  const notifyDepartmentArrival = (ticketId?: string, departmentId?: string, ticketRow?: any) => {
+    const ticket = ticketsRef.current.find(item => item.id === ticketId);
+    if (!departmentId || !isCurrentUserDepartmentManager(departmentId)) return;
+
+    const deptName = departmentsRef.current.find(dept => dept.id === departmentId)?.name || 'seu departamento';
+    const customerName = ticket
+      ? getTicketCustomerName(ticket)
+      : customersRef.current.find(customer => customer.id === ticketRow?.customer_id)?.name || ticketRow?.title || 'Cliente';
+
+    pushNotification({
+      title: 'Novo cliente no seu departamento',
+      body: `${customerName} chegou em ${deptName}.`,
+      ticketId
+    });
   };
   
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -605,10 +751,22 @@ export default function App() {
         .channel('db-changes')
         .on('postgres_changes', { event: '*', schema: 'public', table: 'tickets' }, (payload) => {
           console.log('[SUPABASE] Ticket change detected:', payload);
+          const newTicket = payload.new as any;
+          const currentTicketSnapshot = ticketsRef.current.find(ticket => ticket.id === newTicket?.id);
+          if (payload.eventType === 'INSERT') {
+            notifyDepartmentArrival(newTicket?.id, newTicket?.department_id, newTicket);
+          }
+          if (payload.eventType === 'UPDATE' && newTicket?.department_id && currentTicketSnapshot?.departmentId !== newTicket.department_id) {
+            notifyDepartmentArrival(newTicket.id, newTicket.department_id, newTicket);
+          }
           fetchData(false);
         })
         .on('postgres_changes', { event: '*', schema: 'public', table: 'messages' }, (payload) => {
           console.log('[SUPABASE] Message change detected:', payload);
+          const newMessage = payload.new as any;
+          if (payload.eventType === 'INSERT' && newMessage?.sender === 'customer') {
+            notifyNewCustomerMessage(newMessage.ticket_id);
+          }
           fetchData(false);
         })
         .on('postgres_changes', { event: '*', schema: 'public', table: 'internal_messages' }, (payload) => {
@@ -711,6 +869,7 @@ export default function App() {
         const sorted = depts.sort((a: any, b: any) => (a.sequence || 0) - (b.sequence || 0));
         setDepartments(sorted.map((d: any) => ({
           ...d,
+          name: getStandardDepartmentName(d.name),
           requiredDocuments: d.required_documents || []
         })));
         if (sorted.length > 0 && !inviteDept) setInviteDept(sorted[0].id);
@@ -1099,8 +1258,9 @@ export default function App() {
 
   const handleAssignTicket = async (ticketId: string, assigneeId: string | null) => {
     const ticket = tickets.find(t => t.id === ticketId);
-    if (!ticket || !canManageTicketAssignment(ticket)) {
-      alert('Apenas o chefe do departamento atual pode atribuir este cliente.');
+    const isSelfAssignment = !!currentUser && assigneeId === currentUser.id && canSelfAssignTicket(ticket);
+    if (!ticket || (!canManageTicketAssignment(ticket) && !isSelfAssignment)) {
+      alert('Apenas o Gestor atual pode atribuir este cliente, ou o colaborador pode assumir para si.');
       return;
     }
 
@@ -1587,8 +1747,11 @@ export default function App() {
     const messageText = isInternal ? internalInputMessage : inputMessage;
     if (!messageText.trim() || !selectedTicketId) return;
     const activeTicket = tickets.find(t => t.id === selectedTicketId);
-    if (!canInteractWithTicket(activeTicket)) {
-      alert('Você não tem permissão para interagir com este cliente.');
+    if (isInternal ? !canSendInternalMessage(activeTicket) : !canInteractWithTicket(activeTicket)) {
+      alert(isInternal
+        ? 'Voce nao tem permissao para enviar mensagens internas neste cliente.'
+        : 'Voce nao tem permissao para interagir com este cliente.'
+      );
       return;
     }
 
@@ -1713,75 +1876,113 @@ export default function App() {
     }
   };
 
-  const handleMoveToNextDept = async (ticketId: string) => {
-    const ticket = tickets.find(t => t.id === ticketId);
-    if (!ticket) return;
+  const validateDepartmentTransfer = (ticket: Ticket, targetDepartmentId: string) => {
     if (!canInteractWithTicket(ticket)) {
-      alert('Você não tem permissão para mover este cliente.');
-      return;
+      alert('Voce nao tem permissao para mover este cliente.');
+      return false;
     }
+
+    if (ticket.departmentId === targetDepartmentId) return false;
 
     const currentDept = departments.find(d => d.id === ticket.departmentId);
     const requirements = currentDept?.requiredDocuments || [];
-    
-    // Check if all requirements for CURRENT department are met before leaving
-    const missingDocs = requirements.filter(req => 
+    const missingDocs = requirements.filter(req =>
       !ticket.documents?.some(doc => doc.name === req)
     );
 
     if (missingDocs.length > 0) {
-      alert(`⚠️ Bloqueio de Fluxo:\n\nOs seguintes documentos são obrigatórios para o setor "${currentDept?.name}" e devem ser anexados antes de prosseguir:\n\n- ${missingDocs.join('\n- ')}`);
+      alert(`Bloqueio de Fluxo:\n\nOs seguintes documentos sao obrigatorios para o setor "${currentDept?.name}" e devem ser anexados antes de prosseguir:\n\n- ${missingDocs.join('\n- ')}`);
       setRightSidebarTab('documents');
-      return;
+      return false;
     }
+
+    return true;
+  };
+
+  const requestDepartmentTransfer = (ticketId: string, targetDepartmentId: string) => {
+    const ticket = tickets.find(t => t.id === ticketId);
+    if (!ticket || !validateDepartmentTransfer(ticket, targetDepartmentId)) return;
+    setPendingTransfer({ ticketId, departmentId: targetDepartmentId });
+  };
+
+  const handleMoveToNextDept = (ticketId: string) => {
+    const ticket = tickets.find(t => t.id === ticketId);
+    if (!ticket) return;
 
     const currentIndex = departments.findIndex(d => d.id === ticket.departmentId);
     const nextDept = departments[currentIndex + 1];
 
     if (nextDept) {
-      console.log(`Moving ticket ${ticketId} to department ${nextDept.name}`);
-      
-      // Optimistic update
-      setTickets(prev => prev.map(t => t.id === ticketId ? { 
-        ...t, 
-        departmentId: nextDept.id, 
-        assignedTo: undefined,
-        updatedAt: new Date() 
-      } : t));
-
-      try {
-        const { error } = await supabase
-          .from('tickets')
-          .update({
-            department_id: nextDept.id,
-            assigned_to: null,
-            updated_at: new Date().toISOString()
-          })
-          .eq('id', ticketId);
-
-        if (error) throw error;
-
-        // Notify in internal chat about the transfer
-        await supabase
-          .from('internal_messages')
-          .insert({
-            ticket_id: ticketId,
-            text: `➡️ Ticket movido para o setor: ${nextDept.name}`,
-            sender_id: 'system',
-            sender_name: 'Sistema'
-          });
-
-      } catch (error) {
-        console.error('Error moving ticket:', error);
-        alert('Erro ao mover ticket.');
-        fetchData(false); // Rollback
-      }
+      requestDepartmentTransfer(ticketId, nextDept.id);
     } else {
       console.log('No next department found');
-      alert('Este já é o último setor disponível.');
+      alert('Este ja e o ultimo setor disponivel.');
     }
   };
 
+  const confirmDepartmentTransfer = async () => {
+    if (!pendingTransfer || !currentUser) return;
+
+    const ticket = tickets.find(t => t.id === pendingTransfer.ticketId);
+    const targetDept = departments.find(d => d.id === pendingTransfer.departmentId);
+    const ticketCustomer = ticket ? customers.find(c => c.id === ticket.customerId) : null;
+    if (!ticket || !targetDept) return;
+
+    setTransferSubmitting(true);
+
+    const transferText = `Ticket movido para o setor: ${targetDept.name}`;
+    const transferMessage: InternalMessage = {
+      id: `temp-transfer-${Date.now()}`,
+      text: transferText,
+      senderId: currentUser.id,
+      senderName: currentUser.name,
+      departmentName: departments.find(d => d.id === currentUser.departmentId)?.name,
+      timestamp: new Date()
+    };
+
+    setTickets(prev => prev.map(t => t.id === ticket.id ? {
+      ...t,
+      departmentId: targetDept.id,
+      assignedTo: undefined,
+      updatedAt: new Date(),
+      internalMessages: [...t.internalMessages, transferMessage]
+    } : t));
+
+    try {
+      const { error: messageError } = await supabase
+        .from('internal_messages')
+        .insert({
+          ticket_id: ticket.id,
+          text: transferText,
+          sender_id: currentUser.id,
+          sender_name: currentUser.name,
+          department_name: transferMessage.departmentName
+        });
+
+      if (messageError) throw messageError;
+
+      const { error: ticketError } = await supabase
+        .from('tickets')
+        .update({
+          department_id: targetDept.id,
+          assigned_to: null,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', ticket.id);
+
+      if (ticketError) throw ticketError;
+
+      setPendingTransfer(null);
+      setTransferSuccessMessage(`${ticketCustomer?.name || 'Cliente'} enviado para ${targetDept.name}.`);
+      window.setTimeout(() => setTransferSuccessMessage(null), 3000);
+    } catch (error) {
+      console.error('Error moving ticket:', error);
+      alert('Erro ao mover ticket.');
+      fetchData(false);
+    } finally {
+      setTransferSubmitting(false);
+    }
+  };
   const QuoteIcon = ({ className }: { className?: string }) => (
     <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M3 21c3 0 7-1 7-8V5c0-1.25-.756-2.017-2-2H4c-1.25 0-2 .75-2 1.972V11c0 1.25.75 2 2 2 1 0 1 0 1 1v1c0 1-1 2-2 2s-1 .008-1 1.031V20c0 1 0 1 1 1z"/><path d="M15 21c3 0 7-1 7-8V5c0-1.25-.757-2.017-2-2h-4c-1.25 0-2 .75-2 1.972V11c0 1.25.75 2 2 2 1 0 1 0 1 1v1c0 1-1 2-2 2s-1 .008-1 1.031V20c0 1 0 1 1 1z"/></svg>
   );
@@ -2003,6 +2204,72 @@ export default function App() {
         <div className="w-12 h-12 bg-white rounded-xl flex items-center justify-center shadow-lg shadow-slate-200 border border-slate-100 overflow-hidden">
           <img src={officialLogoPath} alt="DCoratto" className="w-full h-full object-contain p-1.5" />
         </div>
+
+        <div className="relative">
+          <button
+            type="button"
+            onClick={() => {
+              setShowNotifications(prev => !prev);
+              setNotifications(prev => prev.map(notification => ({ ...notification, read: true })));
+            }}
+            className="relative p-3 rounded-xl text-slate-400 hover:bg-slate-100 hover:text-emerald-600 transition-all"
+            title="Notificações"
+          >
+            <Bell className="w-5 h-5" />
+            {unreadNotifications > 0 && (
+              <span className="absolute -top-1 -right-1 min-w-5 h-5 px-1 rounded-full bg-emerald-600 text-white text-[10px] font-black flex items-center justify-center border-2 border-white">
+                {unreadNotifications > 9 ? '9+' : unreadNotifications}
+              </span>
+            )}
+          </button>
+
+          <AnimatePresence>
+            {showNotifications && (
+              <motion.div
+                initial={{ opacity: 0, x: -8, scale: 0.98 }}
+                animate={{ opacity: 1, x: 0, scale: 1 }}
+                exit={{ opacity: 0, x: -8, scale: 0.98 }}
+                className="absolute left-16 top-0 z-[90] w-80 overflow-hidden rounded-2xl bg-white border border-slate-200 shadow-2xl"
+              >
+                <div className="p-4 border-b border-slate-100">
+                  <p className="text-sm font-black text-slate-900">Notificações</p>
+                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Mensagens e chegadas de clientes</p>
+                </div>
+                <div className="max-h-96 overflow-y-auto">
+                  {notifications.length === 0 ? (
+                    <div className="p-6 text-center text-xs text-slate-400">
+                      Nenhuma notificação por enquanto.
+                    </div>
+                  ) : notifications.map(notification => (
+                    <button
+                      key={notification.id}
+                      type="button"
+                      onClick={() => {
+                        if (notification.ticketId) {
+                          setSelectedTicketId(notification.ticketId);
+                          setActiveTab('tickets');
+                        }
+                        setShowNotifications(false);
+                      }}
+                      className="w-full p-4 text-left hover:bg-emerald-50/60 border-b border-slate-50 transition-colors"
+                    >
+                      <div className="flex items-start gap-3">
+                        <div className="mt-0.5 w-8 h-8 rounded-xl bg-emerald-50 text-emerald-700 flex items-center justify-center shrink-0">
+                          <Bell className="w-4 h-4" />
+                        </div>
+                        <div className="min-w-0">
+                          <p className="text-xs font-black text-slate-800">{notification.title}</p>
+                          <p className="text-xs text-slate-500 leading-relaxed mt-1">{notification.body}</p>
+                          <p className="text-[10px] text-slate-300 mt-2 font-bold">{format(notification.createdAt, 'HH:mm')}</p>
+                        </div>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
         
         <nav className="flex flex-col gap-4 flex-1">
           <div className="mb-4 flex flex-col items-center gap-1">
@@ -2135,18 +2402,12 @@ export default function App() {
                     </div>
                     <div className="text-xs text-slate-500 truncate font-medium">{ticket.title}</div>
                     <div className="flex items-center gap-2 mt-2">
-                      <div className="flex items-center gap-1">
-                        {getStatusIcon(ticket.status)}
-                        <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">{ticket.status}</span>
-                      </div>
                       <span
-                        className="text-[10px] px-1.5 py-0.5 rounded font-bold"
+                        className="inline-flex items-center gap-1 text-[10px] px-2 py-1 rounded-full font-bold uppercase tracking-wider"
                         style={{ backgroundColor: departmentAccent.bg, color: departmentAccent.text }}
                       >
-                        {departments.find(d => d.id === ticket.departmentId)?.name}
-                      </span>
-                      <span className="text-[10px] bg-amber-50 text-amber-600 px-1.5 py-0.5 rounded truncate">
-                        {getTicketAssigneeName(ticket)}
+                        <CircleDot className="w-3 h-3" />
+                        {departments.find(d => d.id === ticket.departmentId)?.name || ticket.status}
                       </span>
                     </div>
                   </button>
@@ -2175,61 +2436,58 @@ export default function App() {
                       </div>
                     </div>
                     <div className="flex items-center gap-2">
-                      <div className="flex items-center gap-1 rounded-lg bg-slate-100 px-2 py-1.5 text-[10px] font-bold text-slate-500">
-                        <UserIcon className="w-3.5 h-3.5" />
+                      <div className="flex items-center gap-1 rounded-xl bg-slate-50 border border-slate-200 px-2 py-1.5 text-[10px] font-bold text-slate-500 shadow-sm">
+                        <UserIcon className="w-3.5 h-3.5 text-slate-400" />
                         {canManageTicketAssignment(selectedTicket) ? (
                           <select
                             value={selectedTicket.assignedTo || ''}
                             onChange={(e) => handleAssignTicket(selectedTicket.id, e.target.value || null)}
-                            className="bg-transparent border-none outline-none text-[10px] font-bold text-slate-600"
+                            className="bg-transparent border-none outline-none text-[10px] font-bold text-slate-700"
                             title="Atribuir cliente"
                           >
-                            <option value="">Chefe do departamento</option>
+                            <option value="">{getDepartmentManagerTitle(selectedTicket.departmentId)}</option>
                             {getDepartmentCollaborators(selectedTicket.departmentId).map(user => (
                               <option key={user.id} value={user.id}>{user.name}</option>
                             ))}
                           </select>
                         ) : (
-                          <span>{getTicketAssigneeName(selectedTicket)}</span>
+                          <span className="text-slate-700">{getTicketAssigneeName(selectedTicket)}</span>
                         )}
                       </div>
-                      <button 
+                      {canSelfAssignTicket(selectedTicket) && (
+                        <button
+                          type="button"
+                          onClick={() => handleAssignTicket(selectedTicket.id, currentUser?.id || null)}
+                          className="flex items-center gap-1 px-2 py-1.5 bg-emerald-50 text-emerald-700 rounded-lg text-[10px] font-bold hover:bg-emerald-100 transition-colors border border-emerald-100"
+                          title="Assumir este cliente para poder enviar mensagens"
+                        >
+                          <UserPlus className="w-3.5 h-3.5" />
+                          Assumir
+                        </button>
+                      )}
+                      <div className="flex items-center gap-1 rounded-xl bg-slate-50 border border-slate-200 px-2 py-1.5 shadow-sm">
+                        <Briefcase className="w-3.5 h-3.5 text-slate-400" />
+                        <select
+                          value={selectedTicket.departmentId}
+                          onChange={(e) => requestDepartmentTransfer(selectedTicket.id, e.target.value)}
+                          disabled={!canInteractWithTicket(selectedTicket)}
+                          className="bg-transparent border-none outline-none text-[10px] font-bold text-slate-700 disabled:opacity-40"
+                          title="Enviar para departamento"
+                        >
+                          {departments.map(dept => (
+                            <option key={dept.id} value={dept.id}>{dept.name}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <button
+                        type="button"
                         onClick={() => handleMoveToNextDept(selectedTicket.id)}
                         disabled={!canInteractWithTicket(selectedTicket)}
-                        title="Mover para Próximo Setor"
-                        className="flex items-center gap-1 px-2 py-1.5 bg-indigo-50 text-indigo-600 rounded-lg text-[10px] font-bold hover:bg-indigo-100 transition-colors border border-indigo-100 disabled:opacity-40 disabled:cursor-not-allowed"
+                        title="Enviar ao proximo departamento"
+                        className="p-2 rounded-xl bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border border-emerald-100 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
                       >
-                        <ArrowRightCircle className="w-3.5 h-3.5" />
-                        Próximo
+                        <ArrowRightCircle className="w-4 h-4" />
                       </button>
-                      <select 
-                        value={selectedTicket.status}
-                        onChange={async (e) => {
-                          const newStatus = e.target.value as TicketStatus;
-                          if (!canInteractWithTicket(selectedTicket)) {
-                            alert('Você não tem permissão para alterar este cliente.');
-                            return;
-                          }
-                          try {
-                            const { error } = await supabase
-                              .from('tickets')
-                              .update({ status: newStatus, updated_at: new Date().toISOString() })
-                              .eq('id', selectedTicket.id);
-                            if (error) throw error;
-                          } catch (error) {
-                            console.error('Error updating status:', error);
-                          }
-                        }}
-                        disabled={!canInteractWithTicket(selectedTicket)}
-                        className="text-[10px] font-bold bg-slate-100 border-none rounded-lg px-2 py-1.5 outline-none disabled:opacity-40"
-                      >
-                        <option value="Novo">Novo</option>
-                        <option value="Orçamento">Orçamento</option>
-                        <option value="Projeto">Projeto</option>
-                        <option value="Produção">Produção</option>
-                        <option value="Instalação">Instalação</option>
-                        <option value="Finalizado">Finalizado</option>
-                      </select>
                     </div>
                   </header>
 
@@ -2512,11 +2770,11 @@ export default function App() {
                         onChange={(e) => setInternalInputMessage(e.target.value)}
                         placeholder="Nota interna ou @alguém..." 
                         className="flex-1 bg-transparent border-none outline-none text-xs py-1.5"
-                        disabled={!canInteractWithTicket(selectedTicket)}
+                        disabled={!canSendInternalMessage(selectedTicket)}
                       />
                       <button 
                         type="submit"
-                        disabled={!internalInputMessage.trim() || !canInteractWithTicket(selectedTicket)}
+                        disabled={!internalInputMessage.trim() || !canSendInternalMessage(selectedTicket)}
                         className="bg-amber-600 text-white p-1.5 rounded-lg hover:bg-amber-700 disabled:opacity-50 transition-colors"
                       >
                         <Lock className="w-4 h-4" />
@@ -3506,6 +3764,77 @@ export default function App() {
           </div>
         </main>
       )}
+      <AnimatePresence>
+        {pendingTransfer && (() => {
+          const transferTicket = tickets.find(t => t.id === pendingTransfer.ticketId);
+          const transferCustomer = transferTicket ? customers.find(c => c.id === transferTicket.customerId) : null;
+          const transferDepartment = departments.find(d => d.id === pendingTransfer.departmentId);
+
+          return (
+            <motion.div
+              className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/30 backdrop-blur-sm px-4"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+            >
+              <motion.div
+                initial={{ opacity: 0, y: 18, scale: 0.98 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: 12, scale: 0.98 }}
+                className="w-full max-w-md rounded-3xl bg-white shadow-2xl border border-emerald-100 overflow-hidden"
+              >
+                <div className="p-6 bg-gradient-to-br from-emerald-50 to-white border-b border-emerald-100">
+                  <div className="w-11 h-11 rounded-2xl bg-emerald-100 text-emerald-700 flex items-center justify-center mb-4">
+                    <ArrowRightCircle className="w-6 h-6" />
+                  </div>
+                  <h3 className="text-lg font-black text-slate-900 leading-tight">
+                    Confirma o envio de {transferCustomer?.name || 'cliente'} ao departamento {transferDepartment?.name || 'selecionado'}?
+                  </h3>
+                  <p className="text-xs text-slate-500 mt-2 leading-relaxed">
+                    O cliente volta sem colaborador atribuido, para que o Gestor do novo departamento escolha o proximo responsavel. Voce continua acompanhando a conversa e pode usar o chat interno.
+                  </p>
+                </div>
+                <div className="p-4 flex items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setPendingTransfer(null)}
+                    disabled={transferSubmitting}
+                    className="px-4 py-2 rounded-xl text-xs font-bold text-slate-500 hover:bg-slate-100 disabled:opacity-50"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    type="button"
+                    onClick={confirmDepartmentTransfer}
+                    disabled={transferSubmitting}
+                    className="px-4 py-2 rounded-xl text-xs font-black text-white bg-emerald-600 hover:bg-emerald-700 shadow-lg shadow-emerald-600/20 disabled:opacity-50"
+                  >
+                    {transferSubmitting ? 'Enviando...' : 'Confirmar envio'}
+                  </button>
+                </div>
+              </motion.div>
+            </motion.div>
+          );
+        })()}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {transferSuccessMessage && (
+          <motion.div
+            initial={{ opacity: 0, y: 18, scale: 0.98 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 18, scale: 0.98 }}
+            className="fixed bottom-6 right-6 z-50 flex items-center gap-3 rounded-2xl bg-emerald-600 text-white px-5 py-4 shadow-2xl shadow-emerald-900/20"
+          >
+            <CheckCircle2 className="w-5 h-5" />
+            <span className="text-sm font-bold">{transferSuccessMessage}</span>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
+
+
+
+

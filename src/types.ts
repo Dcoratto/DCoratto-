@@ -1,6 +1,6 @@
 export type TicketStatus = 'Novo' | 'Orçamento' | 'Projeto' | 'Produção' | 'Instalação' | 'Finalizado';
 export type UserRole = 'Super Admin' | 'Admin' | 'Colaborador';
-export type DepartmentName = 'Vendas' | 'Projetos' | 'Produção' | 'Financeiro' | 'Pós-Venda';
+export type DepartmentName = 'Comercial' | 'Financeiro' | 'Libera��o' | 'Log�stica' | 'Montagem' | 'Sucesso do Cliente';
 
 export interface WhatsAppConfig {
   phoneNumber: string;
@@ -114,3 +114,4 @@ export interface Ticket {
   assignedTo?: string; // User ID
   documents?: TicketDocument[];
 }
+

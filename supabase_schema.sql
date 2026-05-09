@@ -219,11 +219,12 @@ $$;
 
 insert into public.departments (name, sequence)
 values
-  ('Vendas', 1),
-  ('Projetos', 2),
-  ('Producao', 3),
-  ('Financeiro', 4),
-  ('Pos-Venda', 5)
+  ('Comercial', 1),
+  ('Financeiro', 2),
+  ('Liberação', 3),
+  ('Logística', 4),
+  ('Montagem', 5),
+  ('Sucesso do Cliente', 6)
 on conflict (name) do nothing;
 
 insert into storage.buckets (id, name, public)
