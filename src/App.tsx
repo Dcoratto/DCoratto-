@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { 
   MessageSquare, 
   Users, 
@@ -49,8 +49,7 @@ import {
   Plus,
   Quote as QuoteIcon,
   Moon,
-  Sun,
-  Bell
+  Sun
 } from 'lucide-react';
 import { format } from 'date-fns';
 import { cn } from './lib/utils';
@@ -62,13 +61,11 @@ import { Session } from '@supabase/supabase-js';
 export default function App() {
   const officialLogoPath = '/brand/dcoratto-logo.svg';
 
-  type AppNotification = {
-    id: string;
-    title: string;
-    body: string;
-    ticketId?: string;
-    createdAt: Date;
-    read: boolean;
+  type ConversationMeta = {
+    unreadCount: number;
+    pinned: boolean;
+    markedUnread: boolean;
+    lastNotifiedAt: number;
   };
 
   const [isDarkMode, setIsDarkMode] = useState(() => {
@@ -126,8 +123,15 @@ export default function App() {
   const [pendingTransfer, setPendingTransfer] = useState<{ ticketId: string; departmentId: string } | null>(null);
   const [transferSubmitting, setTransferSubmitting] = useState(false);
   const [transferSuccessMessage, setTransferSuccessMessage] = useState<string | null>(null);
-  const [notifications, setNotifications] = useState<AppNotification[]>([]);
-  const [showNotifications, setShowNotifications] = useState(false);
+  const [conversationMeta, setConversationMeta] = useState<Record<string, ConversationMeta>>(() => {
+    if (typeof window === 'undefined') return {};
+    try {
+      return JSON.parse(localStorage.getItem('crm_conversation_meta') || '{}');
+    } catch {
+      return {};
+    }
+  });
+  const [openTicketMenuId, setOpenTicketMenuId] = useState<string | null>(null);
 
   const AUTO_PROVISION_EMAIL = 'dcorattoinovacao@gmail.com';
   const AUTO_PROVISION_PASSWORD = 'sobmedida';
@@ -151,8 +155,8 @@ export default function App() {
 
     if (normalized.includes('vendas') || normalized.includes('comercial')) return 'Comercial';
     if (normalized.includes('financeiro')) return 'Financeiro';
-    if (normalized.includes('projeto') || normalized.includes('liberacao')) return 'Liberação';
-    if (normalized.includes('producao') || normalized.includes('logistica')) return 'Logística';
+    if (normalized.includes('projeto') || normalized.includes('liberacao')) return 'LiberaÃ§Ã£o';
+    if (normalized.includes('producao') || normalized.includes('logistica')) return 'LogÃ­stica';
     if (normalized.includes('instalacao') || normalized.includes('montagem')) return 'Montagem';
     if (normalized.includes('pos-venda') || normalized.includes('sucesso')) return 'Sucesso do Cliente';
     return departmentName || '';
@@ -327,7 +331,7 @@ export default function App() {
         console.warn('[ACTIVITY_LOG] Registro ignorado:', error.message);
       }
     } catch (error) {
-      console.warn('[ACTIVITY_LOG] Tabela indisponível:', error);
+      console.warn('[ACTIVITY_LOG] Tabela indisponÃ­vel:', error);
     }
   };
 
@@ -552,7 +556,6 @@ export default function App() {
 
   const selectedTicket = tickets.find(t => t.id === selectedTicketId);
   const customer = selectedTicket ? customers.find(c => c.id === selectedTicket.customerId) : null;
-  const unreadNotifications = notifications.filter(notification => !notification.read).length;
 
   const ticketsRef = useRef<Ticket[]>([]);
   const customersRef = useRef<Customer[]>([]);
@@ -579,6 +582,10 @@ export default function App() {
   useEffect(() => {
     currentUserRef.current = currentUser;
   }, [currentUser]);
+
+  useEffect(() => {
+    localStorage.setItem('crm_conversation_meta', JSON.stringify(conversationMeta));
+  }, [conversationMeta]);
 
   const isGlobalAdmin = (user?: User | null) => !!user && isAdminRole(user.role) && !user.departmentId;
   const isDepartmentChief = (user: User | null | undefined, departmentId?: string) => {
@@ -639,10 +646,10 @@ export default function App() {
 
     if (normalized.includes('comercial') || normalized.includes('vendas')) return 'Gestor Comercial';
     if (normalized.includes('financeiro')) return 'Gestor Financeiro';
-    if (normalized.includes('liberacao') || normalized.includes('liberação') || normalized.includes('projeto')) return 'Gestor de Liberação';
-    if (normalized.includes('logistica') || normalized.includes('logística') || normalized.includes('producao') || normalized.includes('produção')) return 'Gestor de Logística';
-    if (normalized.includes('montagem') || normalized.includes('instalacao') || normalized.includes('instalação')) return 'Gestor de Montagem';
-    if (normalized.includes('sucesso') || normalized.includes('pos-venda') || normalized.includes('pós-venda')) return 'Gestor de Sucesso do Cliente';
+    if (normalized.includes('liberacao') || normalized.includes('liberaÃ§Ã£o') || normalized.includes('projeto')) return 'Gestor de LiberaÃ§Ã£o';
+    if (normalized.includes('logistica') || normalized.includes('logÃ­stica') || normalized.includes('producao') || normalized.includes('produÃ§Ã£o')) return 'Gestor de LogÃ­stica';
+    if (normalized.includes('montagem') || normalized.includes('instalacao') || normalized.includes('instalaÃ§Ã£o')) return 'Gestor de Montagem';
+    if (normalized.includes('sucesso') || normalized.includes('pos-venda') || normalized.includes('pÃ³s-venda')) return 'Gestor de Sucesso do Cliente';
     return 'Gestor do Departamento';
   };
   const getTicketAssigneeName = (ticket: Ticket) => {
@@ -673,24 +680,54 @@ export default function App() {
     const labels: Record<string, string> = {
       login: 'Login',
       document_upload: 'Documento enviado',
-      media_upload: 'Mídia enviada',
-      ticket_assigned: 'Cliente atribuído',
+      media_upload: 'MÃ­dia enviada',
+      ticket_assigned: 'Cliente atribuÃ­do',
       ticket_unassigned: 'Cliente voltou ao Gestor'
     };
     return labels[action] || action;
   };
 
-  const pushNotification = (notification: Omit<AppNotification, 'id' | 'createdAt' | 'read'>) => {
-    const newNotification: AppNotification = {
-      ...notification,
-      id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
-      createdAt: new Date(),
-      read: false
-    };
+  const updateConversationMeta = (ticketId: string, updater: (meta: ConversationMeta) => ConversationMeta) => {
+    setConversationMeta(prev => {
+      const currentMeta = prev[ticketId] || {
+        unreadCount: 0,
+        pinned: false,
+        markedUnread: false,
+        lastNotifiedAt: 0
+      };
 
-    setNotifications(prev => [newNotification, ...prev].slice(0, 30));
-    setTransferSuccessMessage(notification.title);
-    window.setTimeout(() => setTransferSuccessMessage(null), 3000);
+      return {
+        ...prev,
+        [ticketId]: updater(currentMeta)
+      };
+    });
+  };
+
+  const markConversationRead = (ticketId: string) => {
+    updateConversationMeta(ticketId, meta => ({ ...meta, unreadCount: 0, markedUnread: false }));
+  };
+
+  const markConversationUnread = (ticketId: string) => {
+    updateConversationMeta(ticketId, meta => ({
+      ...meta,
+      unreadCount: Math.max(meta.unreadCount, 1),
+      markedUnread: true,
+      lastNotifiedAt: Date.now()
+    }));
+  };
+
+  const togglePinnedConversation = (ticketId: string) => {
+    updateConversationMeta(ticketId, meta => ({ ...meta, pinned: !meta.pinned, lastNotifiedAt: Date.now() }));
+  };
+
+  const markConversationNotified = (ticketId?: string, incrementUnread: boolean = true) => {
+    if (!ticketId) return;
+    updateConversationMeta(ticketId, meta => ({
+      ...meta,
+      unreadCount: incrementUnread ? meta.unreadCount + 1 : Math.max(meta.unreadCount, 1),
+      markedUnread: true,
+      lastNotifiedAt: Date.now()
+    }));
   };
 
   const getTicketCustomerName = (ticket?: Ticket | null) => {
@@ -714,28 +751,21 @@ export default function App() {
   const notifyNewCustomerMessage = (ticketId?: string) => {
     const ticket = ticketsRef.current.find(item => item.id === ticketId);
     if (!ticket || !shouldNotifyCurrentUserAboutCustomerMessage(ticket)) return;
-
-    pushNotification({
-      title: 'Nova mensagem do cliente',
-      body: `${getTicketCustomerName(ticket)} enviou uma nova mensagem.`,
-      ticketId: ticket.id
-    });
+    if (selectedTicketIdRef.current === ticket.id) return;
+    markConversationNotified(ticket.id, true);
   };
 
   const notifyDepartmentArrival = (ticketId?: string, departmentId?: string, ticketRow?: any) => {
     const ticket = ticketsRef.current.find(item => item.id === ticketId);
     if (!departmentId || !isCurrentUserDepartmentManager(departmentId)) return;
 
-    const deptName = departmentsRef.current.find(dept => dept.id === departmentId)?.name || 'seu departamento';
-    const customerName = ticket
-      ? getTicketCustomerName(ticket)
-      : customersRef.current.find(customer => customer.id === ticketRow?.customer_id)?.name || ticketRow?.title || 'Cliente';
+    markConversationNotified(ticketId, false);
+  };
 
-    pushNotification({
-      title: 'Novo cliente no seu departamento',
-      body: `${customerName} chegou em ${deptName}.`,
-      ticketId
-    });
+  const notifyTicketAssignment = (ticketId?: string, assigneeId?: string | null) => {
+    const user = currentUserRef.current;
+    if (!ticketId || !user || assigneeId !== user.id) return;
+    markConversationNotified(ticketId, false);
   };
   
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -758,6 +788,9 @@ export default function App() {
           }
           if (payload.eventType === 'UPDATE' && newTicket?.department_id && currentTicketSnapshot?.departmentId !== newTicket.department_id) {
             notifyDepartmentArrival(newTicket.id, newTicket.department_id, newTicket);
+          }
+          if (payload.eventType === 'UPDATE' && newTicket?.assigned_to && currentTicketSnapshot?.assignedTo !== newTicket.assigned_to) {
+            notifyTicketAssignment(newTicket.id, newTicket.assigned_to);
           }
           fetchData(false);
         })
@@ -1005,23 +1038,44 @@ export default function App() {
   }, [selectedTicket?.messages]);
 
   // Filter tickets based on role
-  const filteredTickets = tickets.filter(t => {
+  const filteredTickets = useMemo(() => tickets.filter(t => {
     return canViewTicket(t, currentUser);
-  });
+  }), [tickets, currentUser, users]);
+  const sortedTickets = useMemo(() => [...filteredTickets].sort((a, b) => {
+    const aMeta = conversationMeta[a.id];
+    const bMeta = conversationMeta[b.id];
+    const aPinned = Number(!!aMeta?.pinned);
+    const bPinned = Number(!!bMeta?.pinned);
+    if (aPinned !== bPinned) return bPinned - aPinned;
+
+    const aUnread = Number((aMeta?.unreadCount || 0) > 0 || !!aMeta?.markedUnread);
+    const bUnread = Number((bMeta?.unreadCount || 0) > 0 || !!bMeta?.markedUnread);
+    if (aUnread !== bUnread) return bUnread - aUnread;
+
+    const aActivity = Math.max(a.updatedAt.getTime(), aMeta?.lastNotifiedAt || 0);
+    const bActivity = Math.max(b.updatedAt.getTime(), bMeta?.lastNotifiedAt || 0);
+    return bActivity - aActivity;
+  }), [filteredTickets, conversationMeta]);
   const visibleCustomers = customers.filter(customer => {
     return filteredTickets.some(ticket => ticket.customerId === customer.id) || isGlobalAdmin(currentUser);
   });
 
   useEffect(() => {
     if (!selectedTicketId) {
-      if (filteredTickets.length > 0) setSelectedTicketId(filteredTickets[0].id);
+      if (sortedTickets.length > 0) setSelectedTicketId(sortedTickets[0].id);
       return;
     }
 
     if (!filteredTickets.some(ticket => ticket.id === selectedTicketId)) {
-      setSelectedTicketId(filteredTickets[0]?.id || null);
+      setSelectedTicketId(sortedTickets[0]?.id || null);
     }
-  }, [filteredTickets, selectedTicketId]);
+  }, [filteredTickets, sortedTickets, selectedTicketId]);
+
+  const selectTicket = (ticketId: string) => {
+    setSelectedTicketId(ticketId);
+    markConversationRead(ticketId);
+    setOpenTicketMenuId(null);
+  };
 
   const handleSendInvite = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -1107,7 +1161,7 @@ export default function App() {
       if (data.success) {
         setWaPairingCode(data.code);
       } else {
-        alert('Erro ao solicitar código: ' + data.error);
+        alert('Erro ao solicitar cÃ³digo: ' + data.error);
       }
     } catch (error) {
       console.error('Error requesting pairing code:', error);
@@ -1123,7 +1177,7 @@ export default function App() {
     const phone = prompt('Telefone (com DDD):');
     if (!phone) return;
     const email = prompt('E-mail:');
-    const address = prompt('Endereço:');
+    const address = prompt('EndereÃ§o:');
 
     try {
       const { error } = await supabase
@@ -1156,7 +1210,7 @@ export default function App() {
     const ticket = tickets.find(t => t.id === selectedTicketId);
     if (!ticket) return;
     if (!canInteractWithTicket(ticket)) {
-      alert('Você não tem permissão para anexar documentos neste cliente.');
+      alert('VocÃª nÃ£o tem permissÃ£o para anexar documentos neste cliente.');
       return;
     }
 
@@ -1216,7 +1270,7 @@ export default function App() {
       // Also create an internal message audit log
       await supabase.from('internal_messages').insert({
         ticket_id: selectedTicketId,
-        text: `📎 ARQUIVO ANEXADO: ${newDoc.name}`,
+        text: `ðŸ“Ž ARQUIVO ANEXADO: ${newDoc.name}`,
         sender_id: currentUser.id,
         sender_name: currentUser.name,
         department_name: departments.find(d => d.id === currentUser.departmentId)?.name
@@ -1249,7 +1303,7 @@ export default function App() {
 
   const handleSettings = () => {
     if (!canAccessSystemSettings) {
-      alert('Você não tem permissão para acessar as configurações do sistema.');
+      alert('VocÃª nÃ£o tem permissÃ£o para acessar as configuraÃ§Ãµes do sistema.');
       return;
     }
     setActiveTab('admin');
@@ -1316,7 +1370,7 @@ export default function App() {
   const handleDeleteUser = async (userId: string) => {
     if (!currentUser) return;
     if (userId === currentUser.id) {
-      alert('Você não pode excluir sua própria conta logada.');
+      alert('VocÃª nÃ£o pode excluir sua prÃ³pria conta logada.');
       return;
     }
     if (!confirm('Tem certeza que deseja excluir este colaborador do sistema?')) return;
@@ -1333,7 +1387,7 @@ export default function App() {
         setEditingUser(null);
         setEditUserData({});
       }
-      alert('Colaborador excluído com sucesso.');
+      alert('Colaborador excluÃ­do com sucesso.');
     } catch (error: any) {
       console.error('Error deleting user:', error);
       alert('Erro ao excluir colaborador: ' + (error?.message || error));
@@ -1349,7 +1403,7 @@ export default function App() {
     console.log('[AUDIO] startRecording called');
     const ticket = tickets.find(t => t.id === selectedTicketId);
     if (!canInteractWithTicket(ticket)) {
-      alert('Você não tem permissão para enviar áudio para este cliente.');
+      alert('VocÃª nÃ£o tem permissÃ£o para enviar Ã¡udio para este cliente.');
       return;
     }
     try {
@@ -1422,7 +1476,7 @@ export default function App() {
           }
         } catch (err) {
           console.error('[AUDIO] Error uploading audio:', err);
-          alert('Erro ao enviar áudio.');
+          alert('Erro ao enviar Ã¡udio.');
         }
         updateRecordingStatus('idle');
       };
@@ -1473,7 +1527,7 @@ export default function App() {
     if (!file || !selectedTicketId) return;
     const ticket = tickets.find(t => t.id === selectedTicketId);
     if (!canInteractWithTicket(ticket)) {
-      alert('Você não tem permissão para enviar arquivos para este cliente.');
+      alert('VocÃª nÃ£o tem permissÃ£o para enviar arquivos para este cliente.');
       return;
     }
 
@@ -1632,7 +1686,7 @@ export default function App() {
   };
 
   const handleDeleteDepartment = async (id: string) => {
-    if (!confirm('Tem certeza que deseja excluir este departamento? Isso pode afetar tickets e usuários vinculados.')) return;
+    if (!confirm('Tem certeza que deseja excluir este departamento? Isso pode afetar tickets e usuÃ¡rios vinculados.')) return;
     
     try {
       const { error } = await supabase
@@ -1731,7 +1785,7 @@ export default function App() {
           .from('internal_messages')
           .insert({
             ticket_id: ticketId,
-            text: `🚩 MENSAGEM MARCADA: ${contextText}`,
+            text: `ðŸš© MENSAGEM MARCADA: ${contextText}`,
             sender_id: 'system',
             sender_name: 'Sistema',
             quoted_message_id: messageId
@@ -1756,7 +1810,7 @@ export default function App() {
     }
 
     if (!isOnline) {
-      alert('Você está offline. Conecte-se à internet para enviar mensagens.');
+      alert('VocÃª estÃ¡ offline. Conecte-se Ã  internet para enviar mensagens.');
       return;
     }
 
@@ -1990,10 +2044,10 @@ export default function App() {
   const getStatusIcon = (status: TicketStatus) => {
     switch (status) {
       case 'Novo': return <CircleDot className="w-4 h-4 text-blue-500" />;
-      case 'Orçamento': return <Clock className="w-4 h-4 text-yellow-500" />;
+      case 'OrÃ§amento': return <Clock className="w-4 h-4 text-yellow-500" />;
       case 'Projeto': return <SparklesIcon className="w-4 h-4 text-purple-500" />;
-      case 'Produção': return <Hammer className="w-4 h-4 text-orange-500" />;
-      case 'Instalação': return <Truck className="w-4 h-4 text-indigo-500" />;
+      case 'ProduÃ§Ã£o': return <Hammer className="w-4 h-4 text-orange-500" />;
+      case 'InstalaÃ§Ã£o': return <Truck className="w-4 h-4 text-indigo-500" />;
       case 'Finalizado': return <CheckCircle2 className="w-4 h-4 text-green-500" />;
     }
   };
@@ -2004,15 +2058,15 @@ export default function App() {
 
   const renderMessageText = (text: string) => {
     const normalizedText = text
-      .replace(/^🎤 \[AUDIO\]/, '[AUDIO]')
-      .replace(/^📷 \[IMAGE\]/, '[IMAGE]')
-      .replace(/^🎥 \[VIDEO\]/, '[VIDEO]')
-      .replace(/^📄 \[FILE\]/, '[FILE]');
+      .replace(/^ðŸŽ¤ \[AUDIO\]/, '[AUDIO]')
+      .replace(/^ðŸ“· \[IMAGE\]/, '[IMAGE]')
+      .replace(/^ðŸŽ¥ \[VIDEO\]/, '[VIDEO]')
+      .replace(/^ðŸ“„ \[FILE\]/, '[FILE]');
 
     const renderExpiredMedia = () => (
       <div className="flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-700">
         <AlertCircle className="w-4 h-4 shrink-0" />
-        Mídia temporária expirada.
+        MÃ­dia temporÃ¡ria expirada.
       </div>
     );
 
@@ -2022,7 +2076,7 @@ export default function App() {
       return (
         <div className="flex flex-col gap-2 py-1 min-w-[240px]">
           <div className="flex items-center gap-2 text-indigo-600 font-bold text-[10px] uppercase tracking-wider">
-            <Mic className="w-3 h-3" /> Mensagem de Áudio
+            <Mic className="w-3 h-3" /> Mensagem de Ãudio
           </div>
           <audio controls className="h-10 w-full">
             <source src={url} type="audio/mpeg" />
@@ -2148,7 +2202,7 @@ export default function App() {
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-100 rounded-xl outline-none focus:border-indigo-600 transition-all text-sm"
-                  placeholder="••••••••"
+                  placeholder="â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢"
                   required
                 />
               </div>
@@ -2171,10 +2225,10 @@ export default function App() {
               }}
               className="text-sm font-bold text-indigo-600 hover:text-indigo-700"
             >
-              {authMode === 'login' ? "Ainda não tem conta? Cadastrar" : "Já tem uma conta? Entrar"}
+              {authMode === 'login' ? "Ainda nÃ£o tem conta? Cadastrar" : "JÃ¡ tem uma conta? Entrar"}
             </button>
             <div className="flex items-center gap-2 text-[10px] text-slate-300 font-bold uppercase tracking-widest">
-              <ShieldCheck className="w-3 h-3" /> Conexão Segura Supabase
+              <ShieldCheck className="w-3 h-3" /> ConexÃ£o Segura Supabase
             </div>
           </div>
         </motion.div>
@@ -2205,72 +2259,6 @@ export default function App() {
           <img src={officialLogoPath} alt="DCoratto" className="w-full h-full object-contain p-1.5" />
         </div>
 
-        <div className="relative">
-          <button
-            type="button"
-            onClick={() => {
-              setShowNotifications(prev => !prev);
-              setNotifications(prev => prev.map(notification => ({ ...notification, read: true })));
-            }}
-            className="relative p-3 rounded-xl text-slate-400 hover:bg-slate-100 hover:text-emerald-600 transition-all"
-            title="Notificações"
-          >
-            <Bell className="w-5 h-5" />
-            {unreadNotifications > 0 && (
-              <span className="absolute -top-1 -right-1 min-w-5 h-5 px-1 rounded-full bg-emerald-600 text-white text-[10px] font-black flex items-center justify-center border-2 border-white">
-                {unreadNotifications > 9 ? '9+' : unreadNotifications}
-              </span>
-            )}
-          </button>
-
-          <AnimatePresence>
-            {showNotifications && (
-              <motion.div
-                initial={{ opacity: 0, x: -8, scale: 0.98 }}
-                animate={{ opacity: 1, x: 0, scale: 1 }}
-                exit={{ opacity: 0, x: -8, scale: 0.98 }}
-                className="absolute left-16 top-0 z-[90] w-80 overflow-hidden rounded-2xl bg-white border border-slate-200 shadow-2xl"
-              >
-                <div className="p-4 border-b border-slate-100">
-                  <p className="text-sm font-black text-slate-900">Notificações</p>
-                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Mensagens e chegadas de clientes</p>
-                </div>
-                <div className="max-h-96 overflow-y-auto">
-                  {notifications.length === 0 ? (
-                    <div className="p-6 text-center text-xs text-slate-400">
-                      Nenhuma notificação por enquanto.
-                    </div>
-                  ) : notifications.map(notification => (
-                    <button
-                      key={notification.id}
-                      type="button"
-                      onClick={() => {
-                        if (notification.ticketId) {
-                          setSelectedTicketId(notification.ticketId);
-                          setActiveTab('tickets');
-                        }
-                        setShowNotifications(false);
-                      }}
-                      className="w-full p-4 text-left hover:bg-emerald-50/60 border-b border-slate-50 transition-colors"
-                    >
-                      <div className="flex items-start gap-3">
-                        <div className="mt-0.5 w-8 h-8 rounded-xl bg-emerald-50 text-emerald-700 flex items-center justify-center shrink-0">
-                          <Bell className="w-4 h-4" />
-                        </div>
-                        <div className="min-w-0">
-                          <p className="text-xs font-black text-slate-800">{notification.title}</p>
-                          <p className="text-xs text-slate-500 leading-relaxed mt-1">{notification.body}</p>
-                          <p className="text-[10px] text-slate-300 mt-2 font-bold">{format(notification.createdAt, 'HH:mm')}</p>
-                        </div>
-                      </div>
-                    </button>
-                  ))}
-                </div>
-              </motion.div>
-            )}
-          </AnimatePresence>
-        </div>
-        
         <nav className="flex flex-col gap-4 flex-1">
           <div className="mb-4 flex flex-col items-center gap-1">
             <div className={cn(
@@ -2315,7 +2303,7 @@ export default function App() {
           {canAccessSystemSettings && (
             <button 
               onClick={() => setActiveTab('admin')}
-              title="Configurações do Sistema"
+              title="ConfiguraÃ§Ãµes do Sistema"
               className={cn(
                 "p-3 rounded-xl transition-all",
                 activeTab === 'admin' ? "bg-indigo-50 text-indigo-600" : "text-slate-400 hover:bg-slate-100 hover:text-slate-600"
@@ -2335,7 +2323,7 @@ export default function App() {
                 "p-3 rounded-xl transition-all",
                 activeTab === 'admin' ? "bg-indigo-50 text-indigo-600" : "text-slate-400 hover:bg-slate-100 hover:text-indigo-600"
               )}
-              title="Configurações"
+              title="ConfiguraÃ§Ãµes"
             >
               <Settings className="w-6 h-6" />
             </button>
@@ -2383,34 +2371,114 @@ export default function App() {
             </div>
 
             <div className="flex-1 overflow-y-auto">
-              {filteredTickets.map(ticket => {
+              {sortedTickets.map(ticket => {
                 const ticketCustomer = customers.find(c => c.id === ticket.customerId);
                 const departmentAccent = getDepartmentAccent(ticket.departmentId);
+                const meta = conversationMeta[ticket.id];
+                const unreadCount = meta?.unreadCount || 0;
+                const isUnread = unreadCount > 0 || !!meta?.markedUnread;
+                const isPinned = !!meta?.pinned;
                 return (
-                  <button
+                  <div
                     key={ticket.id}
-                    onClick={() => setSelectedTicketId(ticket.id)}
                     style={{ borderLeftColor: departmentAccent.border }}
                     className={cn(
-                      "w-full p-4 flex flex-col gap-1 border-b border-l-4 border-slate-50 transition-colors text-left",
-                      selectedTicketId === ticket.id ? "bg-indigo-50/50" : "hover:bg-slate-50"
+                      "relative w-full p-4 flex flex-col gap-1 border-b border-l-4 border-slate-50 transition-colors text-left group",
+                      selectedTicketId === ticket.id ? "bg-indigo-50/50" : isUnread ? "bg-emerald-50/40 hover:bg-emerald-50/70" : "hover:bg-slate-50"
                     )}
                   >
-                    <div className="flex justify-between items-start">
-                      <span className="font-semibold text-sm truncate">{ticketCustomer?.name}</span>
-                      <span className="text-[10px] text-slate-400">{format(ticket.updatedAt, 'HH:mm')}</span>
-                    </div>
-                    <div className="text-xs text-slate-500 truncate font-medium">{ticket.title}</div>
-                    <div className="flex items-center gap-2 mt-2">
-                      <span
-                        className="inline-flex items-center gap-1 text-[10px] px-2 py-1 rounded-full font-bold uppercase tracking-wider"
-                        style={{ backgroundColor: departmentAccent.bg, color: departmentAccent.text }}
-                      >
-                        <CircleDot className="w-3 h-3" />
-                        {departments.find(d => d.id === ticket.departmentId)?.name || ticket.status}
-                      </span>
-                    </div>
-                  </button>
+                    <button
+                      type="button"
+                      onClick={() => selectTicket(ticket.id)}
+                      className="w-full text-left"
+                    >
+                      <div className="flex justify-between items-start gap-2 pr-7">
+                        <span className={cn("text-sm truncate", isUnread ? "font-black text-slate-900" : "font-semibold text-slate-700")}>
+                          {ticketCustomer?.name}
+                        </span>
+                        <span className={cn("text-[10px] shrink-0", isUnread ? "font-bold text-emerald-600" : "text-slate-400")}>
+                          {format(ticket.updatedAt, 'HH:mm')}
+                        </span>
+                      </div>
+                      <div className={cn("text-xs truncate pr-8", isUnread ? "text-slate-700 font-bold" : "text-slate-500 font-medium")}>
+                        {ticket.lastMessage || ticket.title}
+                      </div>
+                      <div className="flex items-center gap-2 mt-2">
+                        <span
+                          className="inline-flex items-center gap-1 text-[10px] px-2 py-1 rounded-full font-bold uppercase tracking-wider"
+                          style={{ backgroundColor: departmentAccent.bg, color: departmentAccent.text }}
+                        >
+                          <CircleDot className="w-3 h-3" />
+                          {departments.find(d => d.id === ticket.departmentId)?.name || ticket.status}
+                        </span>
+                        {isPinned && (
+                          <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-500 font-black uppercase">
+                            Fixada
+                          </span>
+                        )}
+                      </div>
+                    </button>
+
+                    {unreadCount > 0 && (
+                      <div className="absolute right-4 top-10 min-w-5 h-5 px-1.5 rounded-full bg-emerald-500 text-white text-[10px] font-black flex items-center justify-center shadow-sm">
+                        {unreadCount > 9 ? '9+' : unreadCount}
+                      </div>
+                    )}
+
+                    <button
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        setOpenTicketMenuId(openTicketMenuId === ticket.id ? null : ticket.id);
+                      }}
+                      className="absolute right-3 top-3 p-1.5 rounded-lg text-slate-300 hover:text-slate-700 hover:bg-white/80 transition-all opacity-100 sm:opacity-0 sm:group-hover:opacity-100"
+                      title="OpÃ§Ãµes da conversa"
+                    >
+                      <MoreVertical className="w-4 h-4" />
+                    </button>
+
+                    <AnimatePresence>
+                      {openTicketMenuId === ticket.id && (
+                        <motion.div
+                          initial={{ opacity: 0, y: -4, scale: 0.98 }}
+                          animate={{ opacity: 1, y: 0, scale: 1 }}
+                          exit={{ opacity: 0, y: -4, scale: 0.98 }}
+                          className="absolute right-3 top-10 z-40 w-52 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xl"
+                        >
+                          <button
+                            type="button"
+                            onClick={() => {
+                              markConversationUnread(ticket.id);
+                              setOpenTicketMenuId(null);
+                            }}
+                            className="w-full px-4 py-3 text-left text-xs font-bold text-slate-700 hover:bg-slate-50"
+                          >
+                            Marcar como nÃ£o lido
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              togglePinnedConversation(ticket.id);
+                              setOpenTicketMenuId(null);
+                            }}
+                            className="w-full px-4 py-3 text-left text-xs font-bold text-slate-700 hover:bg-slate-50"
+                          >
+                            {isPinned ? 'Desfixar conversa' : 'Fixar conversa no topo'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setOpenTicketMenuId(null);
+                              handleMoveToNextDept(ticket.id);
+                            }}
+                            className="w-full px-4 py-3 text-left text-xs font-bold text-emerald-700 hover:bg-emerald-50"
+                          >
+                            Transferir conversa
+                          </button>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                  </div>
                 );
               })}
             </div>
@@ -2553,7 +2621,7 @@ export default function App() {
                                     "p-1.5 bg-white rounded-full shadow-md border border-slate-100 hover:text-amber-500",
                                     msg.isFlagged && "text-amber-500"
                                   )}
-                                  title="Marcar para próximos setores"
+                                  title="Marcar para prÃ³ximos setores"
                                 >
                                   <Flag className={cn("w-3 h-3", msg.isFlagged && "fill-amber-500")} />
                                 </button>
@@ -2610,7 +2678,7 @@ export default function App() {
                         type="text" 
                         value={inputMessage}
                         onChange={(e) => setInputMessage(e.target.value)}
-                        placeholder={recordingStatus !== 'idle' ? "Gravando áudio..." : "Mensagem para o cliente..."} 
+                        placeholder={recordingStatus !== 'idle' ? "Gravando Ã¡udio..." : "Mensagem para o cliente..."} 
                         className="flex-1 bg-transparent border-none outline-none text-xs py-1.5"
                         disabled={recordingStatus !== 'idle' || !canInteractWithTicket(selectedTicket)}
                       />
@@ -2645,7 +2713,7 @@ export default function App() {
                           inputMessage.trim() ? "bg-indigo-600 text-white hover:bg-indigo-700 shadow-md" : 
                           "bg-slate-200 text-slate-500 hover:bg-slate-300"
                         )}
-                        title={recordingStatus !== 'idle' ? "Enviar Áudio" : inputMessage.trim() ? "Enviar Mensagem" : "Gravar Áudio"}
+                        title={recordingStatus !== 'idle' ? "Enviar Ãudio" : inputMessage.trim() ? "Enviar Mensagem" : "Gravar Ãudio"}
                       >
                         {recordingStatus !== 'idle' || inputMessage.trim() ? (
                           <Send className="w-4 h-4" />
@@ -2672,7 +2740,7 @@ export default function App() {
                   <div className="flex-1 overflow-y-auto p-6 flex flex-col gap-4">
                     <div className="flex items-center gap-2 mb-2">
                       <Info className="w-3 h-3 text-amber-500" />
-                      <span className="text-[9px] font-bold text-amber-600 uppercase tracking-widest">Anotações e Equipe</span>
+                      <span className="text-[9px] font-bold text-amber-600 uppercase tracking-widest">AnotaÃ§Ãµes e Equipe</span>
                     </div>
 
                     <AnimatePresence initial={false}>
@@ -2707,7 +2775,7 @@ export default function App() {
                                     style={{ color: isTransferMessage ? departmentAccent.text : undefined }}
                                   >
                                     {isTransferMessage ? <ArrowRightCircle className="w-2.5 h-2.5" /> : <AtSign className="w-2.5 h-2.5" />}
-                                    {isTransferMessage ? `Transferência para ${transferDepartmentName}` : msg.senderName}
+                                    {isTransferMessage ? `TransferÃªncia para ${transferDepartmentName}` : msg.senderName}
                                   </span>
                                   {msg.departmentName && (
                                     <span className="text-[7px] font-bold text-slate-400 uppercase tracking-tighter">
@@ -2752,7 +2820,7 @@ export default function App() {
                         <div className="flex items-center gap-2 overflow-hidden">
                           <QuoteIcon className="w-3 h-3 text-amber-500 shrink-0" />
                           <span className="text-[9px] text-slate-500 truncate italic">
-                            Respondendo à mensagem do cliente...
+                            Respondendo Ã  mensagem do cliente...
                           </span>
                         </div>
                         <button onClick={() => setQuotedMessageId(null)} className="text-slate-400 hover:text-slate-600">
@@ -2768,7 +2836,7 @@ export default function App() {
                         type="text" 
                         value={internalInputMessage}
                         onChange={(e) => setInternalInputMessage(e.target.value)}
-                        placeholder="Nota interna ou @alguém..." 
+                        placeholder="Nota interna ou @alguÃ©m..." 
                         className="flex-1 bg-transparent border-none outline-none text-xs py-1.5"
                         disabled={!canSendInternalMessage(selectedTicket)}
                       />
@@ -2788,7 +2856,7 @@ export default function App() {
                 <div className="w-20 h-20 bg-slate-100 rounded-full flex items-center justify-center">
                   <MessageSquare className="w-10 h-10" />
                 </div>
-                <p>Selecione uma conversa para começar</p>
+                <p>Selecione uma conversa para comeÃ§ar</p>
               </div>
             )}
           </main>
@@ -2870,7 +2938,7 @@ export default function App() {
                 <div className="space-y-6">
                   <div>
                     <div className="flex items-center justify-between mb-3">
-                      <h3 className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Informações de Contato</h3>
+                      <h3 className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">InformaÃ§Ãµes de Contato</h3>
                       <button 
                         onClick={() => {
                           if (editingCustomer) {
@@ -2916,7 +2984,7 @@ export default function App() {
                             className="w-full text-xs p-2 border rounded" 
                             value={editCustomerData.address} 
                             onChange={e => setEditCustomerData({...editCustomerData, address: e.target.value})}
-                            placeholder="Endereço"
+                            placeholder="EndereÃ§o"
                           />
                         </div>
                       ) : (
@@ -2931,7 +2999,7 @@ export default function App() {
                           </div>
                           <div className="flex items-center gap-3 text-sm">
                             <MapPin className="w-4 h-4 text-slate-400" />
-                            <span className="text-slate-600 leading-tight">{customer?.address || 'Nenhum endereço'}</span>
+                            <span className="text-slate-600 leading-tight">{customer?.address || 'Nenhum endereÃ§o'}</span>
                           </div>
                         </>
                       )}
@@ -2981,7 +3049,7 @@ export default function App() {
                           const requirements = dept?.requiredDocuments || [];
                           
                           if (requirements.length === 0) {
-                            return <p className="text-[10px] text-slate-400 italic">Este setor não exige documentos obrigatórios.</p>;
+                            return <p className="text-[10px] text-slate-400 italic">Este setor nÃ£o exige documentos obrigatÃ³rios.</p>;
                           }
 
                           return requirements.map(req => {
@@ -3111,7 +3179,7 @@ export default function App() {
                     onClick={() => handleViewCustomerHistory(c.id)}
                     className="w-full py-2 text-indigo-600 text-xs font-bold border border-indigo-100 rounded-lg hover:bg-indigo-50"
                   >
-                    Ver Histórico Completo
+                    Ver HistÃ³rico Completo
                   </button>
                 </div>
               ))}
@@ -3123,9 +3191,9 @@ export default function App() {
       {activeTab === 'admin' && (
         <main className="flex-1 p-10 overflow-y-auto">
           <div className="max-w-5xl mx-auto">
-            <h1 className="text-2xl font-bold mb-2">Configurações do Sistema</h1>
+            <h1 className="text-2xl font-bold mb-2">ConfiguraÃ§Ãµes do Sistema</h1>
             <p className="text-sm text-slate-500 mb-8">
-              Gestão de departamentos com ordem de fluxo, colaboradores e conexão do WhatsApp por QR Code ou número.
+              GestÃ£o de departamentos com ordem de fluxo, colaboradores e conexÃ£o do WhatsApp por QR Code ou nÃºmero.
             </p>
             
             {/* Invite Collaborator Section */}
@@ -3193,7 +3261,7 @@ export default function App() {
                               <span className="text-[10px] text-indigo-600 font-bold uppercase">
                                 {departments.find(d => d.id === invite.departmentId)?.name}
                               </span>
-                              <span className="text-[10px] text-slate-400">•</span>
+                              <span className="text-[10px] text-slate-400">â€¢</span>
                               <span className="text-[10px] text-slate-400">Enviado em {format(invite.createdAt, 'dd/MM/yyyy')}</span>
                             </div>
                           </div>
@@ -3224,7 +3292,7 @@ export default function App() {
               <div className="flex items-center justify-between mb-6">
                 <div>
                   <h2 className="text-lg font-bold flex items-center gap-2">
-                    <Briefcase className="w-5 h-5 text-indigo-600" /> Gestão de Departamentos e Esteira
+                    <Briefcase className="w-5 h-5 text-indigo-600" /> GestÃ£o de Departamentos e Esteira
                   </h2>
                   <p className="text-xs text-slate-400 mt-1">Defina a ordem dos setores e gerencie os departamentos da empresa.</p>
                 </div>
@@ -3393,7 +3461,7 @@ export default function App() {
                   <h2 className="text-lg font-bold flex items-center gap-2">
                     <Database className="w-5 h-5 text-indigo-600" /> Status do Banco de Dados (Supabase)
                   </h2>
-                  <p className="text-xs text-slate-400 mt-1">Verifique a conexão com o banco de dados real.</p>
+                  <p className="text-xs text-slate-400 mt-1">Verifique a conexÃ£o com o banco de dados real.</p>
                 </div>
                 <div className="flex items-center gap-2">
                   <button 
@@ -3412,7 +3480,7 @@ export default function App() {
                     supabaseStatus === 'checking' ? "bg-amber-100 text-amber-700" : "bg-red-100 text-red-700"
                   )}>
                     {supabaseStatus === 'connected' ? <CheckCircle2 className="w-3 h-3" /> : <AlertCircle className="w-3 h-3" />}
-                    {supabaseStatus === 'connected' ? 'Conectado' : supabaseStatus === 'checking' ? 'Verificando...' : 'Erro de Conexão'}
+                    {supabaseStatus === 'connected' ? 'Conectado' : supabaseStatus === 'checking' ? 'Verificando...' : 'Erro de ConexÃ£o'}
                   </div>
                 </div>
               </div>
@@ -3422,16 +3490,16 @@ export default function App() {
                   <p className="mb-2">{supabaseError || 'Erro desconhecido.'}</p>
                   <p>Certifique-se de que:</p>
                   <ul className="list-disc ml-4 mt-1 space-y-1">
-                    <li>Você configurou <b>VITE_SUPABASE_URL</b> e <b>VITE_SUPABASE_ANON_KEY</b> nos Secrets.</li>
-                    <li>O código SQL foi executado com sucesso no Supabase.</li>
+                    <li>VocÃª configurou <b>VITE_SUPABASE_URL</b> e <b>VITE_SUPABASE_ANON_KEY</b> nos Secrets.</li>
+                    <li>O cÃ³digo SQL foi executado com sucesso no Supabase.</li>
                     <li>As tabelas <b>departments</b>, <b>customers</b>, <b>tickets</b>, etc., existem.</li>
                   </ul>
                 </div>
               )}
               {supabaseStatus === 'connected' && departments.length === 0 && (
                 <div className="p-4 bg-amber-50 border border-amber-100 rounded-xl text-amber-700 text-xs">
-                  <p className="font-bold mb-1">Atenção: Nenhuma configuração encontrada!</p>
-                  <p>O banco de dados está conectado, mas a tabela de <b>departamentos</b> está vazia. Rode o código SQL novamente para inserir os dados iniciais.</p>
+                  <p className="font-bold mb-1">AtenÃ§Ã£o: Nenhuma configuraÃ§Ã£o encontrada!</p>
+                  <p>O banco de dados estÃ¡ conectado, mas a tabela de <b>departamentos</b> estÃ¡ vazia. Rode o cÃ³digo SQL novamente para inserir os dados iniciais.</p>
                 </div>
               )}
             </div>
@@ -3441,7 +3509,7 @@ export default function App() {
               <div className="flex justify-between items-start mb-6">
                 <div>
                   <h2 className="text-lg font-bold flex items-center gap-2">
-                    <QrCode className="w-5 h-5 text-indigo-600" /> Conexão WhatsApp (Sem Meta API)
+                    <QrCode className="w-5 h-5 text-indigo-600" /> ConexÃ£o WhatsApp (Sem Meta API)
                   </h2>
                   <p className="text-xs text-slate-400 mt-1">Escaneie o QR Code para conectar seu WhatsApp pessoal/empresa.</p>
                 </div>
@@ -3476,18 +3544,18 @@ export default function App() {
 
                   {waStatus !== 'connected' && (
                     <div className="bg-white p-4 rounded-2xl shadow-sm border border-slate-200">
-                      <p className="text-[10px] font-bold text-slate-500 uppercase mb-3 text-center">Ou conecte via número</p>
+                      <p className="text-[10px] font-bold text-slate-500 uppercase mb-3 text-center">Ou conecte via nÃºmero</p>
                       {waPairingCode ? (
                         <div className="flex flex-col items-center gap-2">
                           <div className="text-2xl font-mono font-bold tracking-widest text-indigo-600 bg-indigo-50 px-4 py-2 rounded-lg border border-indigo-100">
                             {waPairingCode}
                           </div>
-                          <p className="text-[9px] text-slate-400 text-center px-2">Digite este código no seu celular após clicar em "Conectar com número de telefone"</p>
+                          <p className="text-[9px] text-slate-400 text-center px-2">Digite este cÃ³digo no seu celular apÃ³s clicar em "Conectar com nÃºmero de telefone"</p>
                           <button 
                             onClick={() => setWaPairingCode(null)}
                             className="text-[9px] text-indigo-600 font-bold hover:underline mt-1"
                           >
-                            Tentar outro número
+                            Tentar outro nÃºmero
                           </button>
                         </div>
                       ) : (
@@ -3505,7 +3573,7 @@ export default function App() {
                             className="bg-indigo-600 text-white py-2 rounded-lg text-[10px] font-bold hover:bg-indigo-700 disabled:opacity-50 transition-all flex items-center justify-center gap-2"
                           >
                             {isRequestingPair ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Phone className="w-3 h-3" />}
-                            Gerar Código
+                            Gerar CÃ³digo
                           </button>
                         </div>
                       )}
@@ -3518,26 +3586,26 @@ export default function App() {
                     <div className="bg-amber-50 border border-amber-100 p-4 rounded-xl text-amber-700 mb-4 flex items-start gap-3">
                       <AlertCircle className="w-5 h-5 shrink-0 mt-0.5" />
                       <div>
-                        <p className="text-xs font-bold mb-1">Conexão Suspensa</p>
-                        <p className="text-[10px] leading-relaxed">O WhatsApp parou de gerar códigos automaticamente após várias tentativas. Clique no botão abaixo para reiniciar o processo.</p>
+                        <p className="text-xs font-bold mb-1">ConexÃ£o Suspensa</p>
+                        <p className="text-[10px] leading-relaxed">O WhatsApp parou de gerar cÃ³digos automaticamente apÃ³s vÃ¡rias tentativas. Clique no botÃ£o abaixo para reiniciar o processo.</p>
                       </div>
                     </div>
                   )}
-                  <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">Status da Conexão</p>
+                  <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">Status da ConexÃ£o</p>
                   <h3 className="text-xl font-bold text-slate-800">
-                    {waStatus === 'connected' ? 'WhatsApp Ativo' : 'Aguardando Conexão'}
+                    {waStatus === 'connected' ? 'WhatsApp Ativo' : 'Aguardando ConexÃ£o'}
                   </h3>
                   <p className="text-xs text-slate-500 mt-2 leading-relaxed">
                     {waStatus === 'connected' 
-                      ? 'Seu WhatsApp está conectado e pronto para enviar/receber mensagens diretamente pelo CRM.'
-                      : 'Você pode escanear o QR Code acima ou usar o método de código de pareamento por número de telefone.'}
+                      ? 'Seu WhatsApp estÃ¡ conectado e pronto para enviar/receber mensagens diretamente pelo CRM.'
+                      : 'VocÃª pode escanear o QR Code acima ou usar o mÃ©todo de cÃ³digo de pareamento por nÃºmero de telefone.'}
                   </p>
                   {waStatus !== 'connected' && (
                     <button 
                       onClick={handleRestartWA}
                       className="mt-4 flex items-center gap-2 px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition-all w-fit"
                     >
-                      <RefreshCw className="w-3.5 h-3.5" /> Forçar Reinício da Conexão
+                      <RefreshCw className="w-3.5 h-3.5" /> ForÃ§ar ReinÃ­cio da ConexÃ£o
                     </button>
                   )}
                 </div>
@@ -3546,8 +3614,8 @@ export default function App() {
               <div className="mt-6 p-4 bg-indigo-50 rounded-xl border border-indigo-100 flex items-start gap-3">
                 <ShieldCheck className="w-5 h-5 text-indigo-600 shrink-0 mt-0.5" />
                 <div className="text-xs text-indigo-900 leading-relaxed">
-                  <p className="font-bold mb-1">Atenção (Modo Teste):</p>
-                  <p>Este modo utiliza uma conexão direta via QR Code. Não é necessário configurar Webhooks da Meta neste modo.</p>
+                  <p className="font-bold mb-1">AtenÃ§Ã£o (Modo Teste):</p>
+                  <p>Este modo utiliza uma conexÃ£o direta via QR Code. NÃ£o Ã© necessÃ¡rio configurar Webhooks da Meta neste modo.</p>
                 </div>
               </div>
             </div>
@@ -3598,7 +3666,7 @@ export default function App() {
               {/* Users/Roles Section */}
               <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm">
                 <h2 className="text-lg font-bold mb-6 flex items-center gap-2">
-                  <Users className="w-5 h-5 text-indigo-600" /> Colaboradores e Papéis
+                  <Users className="w-5 h-5 text-indigo-600" /> Colaboradores e PapÃ©is
                 </h2>
                 <div className="space-y-4">
                   {users.map(user => (
@@ -3701,7 +3769,7 @@ export default function App() {
                   </div>
                 )) : (
                   <div className="p-8 border-2 border-dashed border-slate-100 rounded-3xl text-center">
-                    <p className="text-sm text-slate-400">Nenhum registro encontrado. Rode o SQL de logs no Supabase para ativar esta área.</p>
+                    <p className="text-sm text-slate-400">Nenhum registro encontrado. Rode o SQL de logs no Supabase para ativar esta Ã¡rea.</p>
                   </div>
                 )}
               </div>
@@ -3713,7 +3781,7 @@ export default function App() {
       {activeTab === 'dashboard' && (
         <main className="flex-1 p-10 overflow-y-auto">
           <div className="max-w-5xl mx-auto">
-            <h1 className="text-2xl font-bold mb-8">Visão Geral</h1>
+            <h1 className="text-2xl font-bold mb-8">VisÃ£o Geral</h1>
             
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-10">
               <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
@@ -3721,9 +3789,9 @@ export default function App() {
                 <h3 className="text-3xl font-bold">{tickets.length}</h3>
               </div>
               <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
-                <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">Em Produção</p>
+                <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">Em ProduÃ§Ã£o</p>
                 <h3 className="text-3xl font-bold text-orange-500">
-                  {tickets.filter(t => t.status === 'Produção').length}
+                  {tickets.filter(t => t.status === 'ProduÃ§Ã£o').length}
                 </h3>
               </div>
               <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
@@ -3834,6 +3902,7 @@ export default function App() {
     </div>
   );
 }
+
 
 
 
