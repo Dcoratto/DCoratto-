@@ -102,6 +102,7 @@ export default function App() {
   const [invitations, setInvitations] = useState<Invitation[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [departments, setDepartments] = useState<Department[]>([]);
+  const [activityLogs, setActivityLogs] = useState<any[]>([]);
   const [selectedTicketId, setSelectedTicketId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -267,6 +268,38 @@ export default function App() {
     }
   };
 
+  const insertActivityLog = async ({
+    actor,
+    action,
+    entityType,
+    entityId,
+    details
+  }: {
+    actor?: Partial<User> | null;
+    action: string;
+    entityType?: string;
+    entityId?: string;
+    details?: Record<string, any>;
+  }) => {
+    try {
+      const { error } = await supabase.from('activity_logs').insert({
+        actor_id: actor?.id || null,
+        actor_name: actor?.name || actor?.email || 'Sistema',
+        actor_email: actor?.email || null,
+        action,
+        entity_type: entityType || null,
+        entity_id: entityId || null,
+        details: details || {}
+      });
+
+      if (error) {
+        console.warn('[ACTIVITY_LOG] Registro ignorado:', error.message);
+      }
+    } catch (error) {
+      console.warn('[ACTIVITY_LOG] Tabela indisponível:', error);
+    }
+  };
+
   const fetchUserProfile = async (userId: string, userEmail: string = '') => {
     try {
       const { data, error } = await supabase
@@ -280,6 +313,13 @@ export default function App() {
       if (data) {
         const shouldPromotePrimaryAdmin = isPrimaryAdminEmail(data.email || userEmail) && !isAdminRole(data.role);
         const profileRole = shouldPromotePrimaryAdmin ? 'Super Admin' : (data.role || 'Colaborador');
+        const loggedUser = {
+          id: data.id,
+          name: data.name,
+          email: data.email,
+          role: profileRole as UserRole,
+          departmentId: data.department_id
+        };
 
         if (shouldPromotePrimaryAdmin) {
           await supabase
@@ -288,12 +328,13 @@ export default function App() {
             .eq('id', userId);
         }
 
-        setCurrentUser({
-          id: data.id,
-          name: data.name,
-          email: data.email,
-          role: profileRole as UserRole,
-          departmentId: data.department_id
+        setCurrentUser(loggedUser);
+        insertActivityLog({
+          actor: loggedUser,
+          action: 'login',
+          entityType: 'profile',
+          entityId: loggedUser.id,
+          details: { role: loggedUser.role, departmentId: loggedUser.departmentId }
         });
       } else {
         const fallbackName = userEmail ? userEmail.split('@')[0] : 'Usuario';
@@ -312,12 +353,20 @@ export default function App() {
         if (createProfileError) throw createProfileError;
 
         if (createdProfile) {
-          setCurrentUser({
+          const createdUser = {
             id: createdProfile.id,
             name: createdProfile.name,
             email: createdProfile.email,
             role: createdProfile.role as UserRole,
             departmentId: createdProfile.department_id
+          };
+          setCurrentUser(createdUser);
+          insertActivityLog({
+            actor: createdUser,
+            action: 'login',
+            entityType: 'profile',
+            entityId: createdUser.id,
+            details: { role: createdUser.role, departmentId: createdUser.departmentId, createdProfile: true }
           });
         }
       }
@@ -472,6 +521,76 @@ export default function App() {
 
   const selectedTicket = tickets.find(t => t.id === selectedTicketId);
   const customer = selectedTicket ? customers.find(c => c.id === selectedTicket.customerId) : null;
+
+  const isGlobalAdmin = (user?: User | null) => !!user && isAdminRole(user.role) && !user.departmentId;
+  const isDepartmentChief = (user: User | null | undefined, departmentId?: string) => {
+    if (!user || !departmentId || !isAdminRole(user.role)) return false;
+    return isGlobalAdmin(user) || user.departmentId === departmentId;
+  };
+  const canViewTicket = (ticket: Ticket, user: User | null) => {
+    if (!user) return false;
+    if (isGlobalAdmin(user)) return true;
+    if (isDepartmentChief(user, ticket.departmentId)) return true;
+    return ticket.departmentId === user.departmentId;
+  };
+  const canManageTicketAssignment = (ticket: Ticket | null | undefined) => {
+    if (!ticket) return false;
+    return isDepartmentChief(currentUser, ticket.departmentId);
+  };
+  const canInteractWithTicket = (ticket: Ticket | null | undefined) => {
+    if (!ticket || !currentUser) return false;
+    if (canManageTicketAssignment(ticket)) return true;
+    return ticket.departmentId === currentUser.departmentId && ticket.assignedTo === currentUser.id;
+  };
+  const getDepartmentChief = (departmentId?: string) => {
+    if (!departmentId) return null;
+    return users
+      .filter(user => isAdminRole(user.role) && user.departmentId === departmentId)
+      .sort((a, b) => {
+        const roleRank = Number(isAdminRole(b.role)) - Number(isAdminRole(a.role));
+        return roleRank || a.name.localeCompare(b.name);
+      })[0] || null;
+  };
+  const getDepartmentCollaborators = (departmentId?: string) => {
+    if (!departmentId) return [];
+    return users
+      .filter(user => user.departmentId === departmentId && !isAdminRole(user.role))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  };
+  const getTicketAssigneeName = (ticket: Ticket) => {
+    const assignedUser = users.find(user => user.id === ticket.assignedTo);
+    if (assignedUser) return assignedUser.name;
+    const chief = getDepartmentChief(ticket.departmentId);
+    return chief ? `${chief.name} (chefe)` : 'Chefe do departamento';
+  };
+  const departmentPalette = [
+    { border: '#2563eb', bg: '#eff6ff', text: '#1d4ed8' },
+    { border: '#16a34a', bg: '#f0fdf4', text: '#15803d' },
+    { border: '#f97316', bg: '#fff7ed', text: '#c2410c' },
+    { border: '#9333ea', bg: '#faf5ff', text: '#7e22ce' },
+    { border: '#dc2626', bg: '#fef2f2', text: '#b91c1c' },
+    { border: '#0891b2', bg: '#ecfeff', text: '#0e7490' }
+  ];
+  const getDepartmentAccent = (departmentIdOrName?: string) => {
+    const departmentIndex = Math.max(0, departments.findIndex(dept =>
+      dept.id === departmentIdOrName || dept.name.toLowerCase() === departmentIdOrName?.toLowerCase()
+    ));
+    return departmentPalette[departmentIndex % departmentPalette.length];
+  };
+  const getTransferDepartmentName = (text: string) => {
+    const match = text.match(/setor:\s*([^.\n]+)/i);
+    return match?.[1]?.split(' e atrib')[0]?.replace(/^["']|["']$/g, '').trim();
+  };
+  const getActivityLabel = (action: string) => {
+    const labels: Record<string, string> = {
+      login: 'Login',
+      document_upload: 'Documento enviado',
+      media_upload: 'Mídia enviada',
+      ticket_assigned: 'Cliente atribuído',
+      ticket_unassigned: 'Cliente voltou ao chefe'
+    };
+    return labels[action] || action;
+  };
   
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -599,6 +718,16 @@ export default function App() {
       if (profs) setUsers(profs.map(p => ({ ...p, role: p.role as UserRole })));
       if (custs) setCustomers(custs);
       if (invs) setInvitations(invs.map(i => ({ ...i, role: i.role as UserRole, createdAt: new Date(i.created_at) })));
+
+      const { data: logs, error: logsError } = await supabase
+        .from('activity_logs')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .limit(80);
+
+      if (!logsError && logs) {
+        setActivityLogs(logs);
+      }
       
       const ticketDocs = (docs || []).map((d: any) => ({
         id: d.id,
@@ -718,10 +847,22 @@ export default function App() {
 
   // Filter tickets based on role
   const filteredTickets = tickets.filter(t => {
-    if (!currentUser) return false;
-    if (isAdminRole(currentUser.role)) return true;
-    return t.departmentId === currentUser.departmentId;
+    return canViewTicket(t, currentUser);
   });
+  const visibleCustomers = customers.filter(customer => {
+    return filteredTickets.some(ticket => ticket.customerId === customer.id) || isGlobalAdmin(currentUser);
+  });
+
+  useEffect(() => {
+    if (!selectedTicketId) {
+      if (filteredTickets.length > 0) setSelectedTicketId(filteredTickets[0].id);
+      return;
+    }
+
+    if (!filteredTickets.some(ticket => ticket.id === selectedTicketId)) {
+      setSelectedTicketId(filteredTickets[0]?.id || null);
+    }
+  }, [filteredTickets, selectedTicketId]);
 
   const handleSendInvite = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -840,7 +981,7 @@ export default function App() {
   };
 
   const handleViewCustomerHistory = (customerId: string) => {
-    const ticket = tickets.find(t => t.customerId === customerId);
+    const ticket = filteredTickets.find(t => t.customerId === customerId);
     if (ticket) {
       setSelectedTicketId(ticket.id);
       setActiveTab('tickets');
@@ -855,6 +996,10 @@ export default function App() {
 
     const ticket = tickets.find(t => t.id === selectedTicketId);
     if (!ticket) return;
+    if (!canInteractWithTicket(ticket)) {
+      alert('Você não tem permissão para anexar documentos neste cliente.');
+      return;
+    }
 
     try {
       setLoading(true);
@@ -918,6 +1063,21 @@ export default function App() {
         department_name: departments.find(d => d.id === currentUser.departmentId)?.name
       });
 
+      insertActivityLog({
+        actor: currentUser,
+        action: 'document_upload',
+        entityType: 'ticket_document',
+        entityId: newDoc.id,
+        details: {
+          ticketId: selectedTicketId,
+          customerId: ticket.customerId,
+          departmentId: ticket.departmentId,
+          fileName: newDoc.name,
+          fileType: newDoc.fileType,
+          fileUrl: newDoc.fileUrl
+        }
+      });
+
     } catch (error: any) {
       console.error('Error uploading document:', error);
       alert('Erro ao enviar documento: ' + error.message);
@@ -935,6 +1095,62 @@ export default function App() {
     }
     setActiveTab('admin');
     window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const handleAssignTicket = async (ticketId: string, assigneeId: string | null) => {
+    const ticket = tickets.find(t => t.id === ticketId);
+    if (!ticket || !canManageTicketAssignment(ticket)) {
+      alert('Apenas o chefe do departamento atual pode atribuir este cliente.');
+      return;
+    }
+
+    if (assigneeId) {
+      const assignee = users.find(user => user.id === assigneeId);
+      if (!assignee || assignee.departmentId !== ticket.departmentId || isAdminRole(assignee.role)) {
+        alert('Selecione um colaborador do departamento atual.');
+        return;
+      }
+    }
+
+    const previousTickets = tickets;
+    setTickets(prev => prev.map(t => t.id === ticketId ? {
+      ...t,
+      assignedTo: assigneeId || undefined,
+      updatedAt: new Date()
+    } : t));
+
+    try {
+      const { error } = await supabase
+        .from('tickets')
+        .update({
+          assigned_to: assigneeId,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', ticketId);
+
+      if (error) throw error;
+
+      const assignee = assigneeId ? users.find(user => user.id === assigneeId) : null;
+      const ticketCustomer = customers.find(customer => customer.id === ticket.customerId);
+      insertActivityLog({
+        actor: currentUser,
+        action: assigneeId ? 'ticket_assigned' : 'ticket_unassigned',
+        entityType: 'ticket',
+        entityId: ticketId,
+        details: {
+          ticketId,
+          customerId: ticket.customerId,
+          customerName: ticketCustomer?.name,
+          departmentId: ticket.departmentId,
+          assignedTo: assigneeId,
+          assignedToName: assignee?.name || null
+        }
+      });
+    } catch (error) {
+      console.error('Error assigning ticket:', error);
+      setTickets(previousTickets);
+      alert('Erro ao atribuir cliente.');
+    }
   };
 
   const handleDeleteUser = async (userId: string) => {
@@ -971,6 +1187,11 @@ export default function App() {
 
   const startRecording = async () => {
     console.log('[AUDIO] startRecording called');
+    const ticket = tickets.find(t => t.id === selectedTicketId);
+    if (!canInteractWithTicket(ticket)) {
+      alert('Você não tem permissão para enviar áudio para este cliente.');
+      return;
+    }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const recorder = new MediaRecorder(stream);
@@ -1020,6 +1241,22 @@ export default function App() {
                 })
               });
             }
+
+            insertActivityLog({
+              actor: currentUser,
+              action: 'media_upload',
+              entityType: 'message',
+              entityId: selectedTicketId,
+              details: {
+                mediaType: 'audio',
+                ticketId: selectedTicketId,
+                customerId: ticket?.customerId,
+                fileName: uploadData.originalName,
+                mimeType: uploadData.mimeType,
+                size: uploadData.size,
+                url: uploadData.url
+              }
+            });
 
             fetchData(false);
           }
@@ -1074,6 +1311,11 @@ export default function App() {
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file || !selectedTicketId) return;
+    const ticket = tickets.find(t => t.id === selectedTicketId);
+    if (!canInteractWithTicket(ticket)) {
+      alert('Você não tem permissão para enviar arquivos para este cliente.');
+      return;
+    }
 
     try {
       const uploadData = await uploadPersistentFile(file, file.name);
@@ -1089,7 +1331,6 @@ export default function App() {
       });
 
       // Also send to WhatsApp
-      const ticket = tickets.find(t => t.id === selectedTicketId);
       const customer = customers.find(c => c.id === ticket?.customerId);
       if (customer?.phone) {
         await fetch('/api/whatsapp/send', {
@@ -1101,6 +1342,22 @@ export default function App() {
           })
         });
       }
+
+      insertActivityLog({
+        actor: currentUser,
+        action: attachmentType === 'document' || attachmentType === 'file' ? 'document_upload' : 'media_upload',
+        entityType: 'message',
+        entityId: selectedTicketId,
+        details: {
+          mediaType: attachmentType,
+          ticketId: selectedTicketId,
+          customerId: ticket?.customerId,
+          fileName: uploadData.originalName,
+          mimeType: uploadData.mimeType,
+          size: uploadData.size,
+          url: uploadData.url
+        }
+      });
 
       fetchData(false);
     } catch (error) {
@@ -1329,6 +1586,11 @@ export default function App() {
     e?.preventDefault();
     const messageText = isInternal ? internalInputMessage : inputMessage;
     if (!messageText.trim() || !selectedTicketId) return;
+    const activeTicket = tickets.find(t => t.id === selectedTicketId);
+    if (!canInteractWithTicket(activeTicket)) {
+      alert('Você não tem permissão para interagir com este cliente.');
+      return;
+    }
 
     if (!isOnline) {
       alert('Você está offline. Conecte-se à internet para enviar mensagens.');
@@ -1388,7 +1650,7 @@ export default function App() {
         console.error('Error sending internal message:', error);
       }
     } else {
-      const ticket = tickets.find(t => t.id === selectedTicketId);
+      const ticket = activeTicket;
       const customer = customers.find(c => c.id === ticket?.customerId);
 
       if (!customer?.phone) {
@@ -1454,6 +1716,10 @@ export default function App() {
   const handleMoveToNextDept = async (ticketId: string) => {
     const ticket = tickets.find(t => t.id === ticketId);
     if (!ticket) return;
+    if (!canInteractWithTicket(ticket)) {
+      alert('Você não tem permissão para mover este cliente.');
+      return;
+    }
 
     const currentDept = departments.find(d => d.id === ticket.departmentId);
     const requirements = currentDept?.requiredDocuments || [];
@@ -1479,6 +1745,7 @@ export default function App() {
       setTickets(prev => prev.map(t => t.id === ticketId ? { 
         ...t, 
         departmentId: nextDept.id, 
+        assignedTo: undefined,
         updatedAt: new Date() 
       } : t));
 
@@ -1851,13 +2118,15 @@ export default function App() {
             <div className="flex-1 overflow-y-auto">
               {filteredTickets.map(ticket => {
                 const ticketCustomer = customers.find(c => c.id === ticket.customerId);
+                const departmentAccent = getDepartmentAccent(ticket.departmentId);
                 return (
                   <button
                     key={ticket.id}
                     onClick={() => setSelectedTicketId(ticket.id)}
+                    style={{ borderLeftColor: departmentAccent.border }}
                     className={cn(
-                      "w-full p-4 flex flex-col gap-1 border-b border-slate-50 transition-colors text-left",
-                      selectedTicketId === ticket.id ? "bg-indigo-50/50 border-l-4 border-l-indigo-600" : "hover:bg-slate-50"
+                      "w-full p-4 flex flex-col gap-1 border-b border-l-4 border-slate-50 transition-colors text-left",
+                      selectedTicketId === ticket.id ? "bg-indigo-50/50" : "hover:bg-slate-50"
                     )}
                   >
                     <div className="flex justify-between items-start">
@@ -1870,8 +2139,14 @@ export default function App() {
                         {getStatusIcon(ticket.status)}
                         <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">{ticket.status}</span>
                       </div>
-                      <span className="text-[10px] bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded">
+                      <span
+                        className="text-[10px] px-1.5 py-0.5 rounded font-bold"
+                        style={{ backgroundColor: departmentAccent.bg, color: departmentAccent.text }}
+                      >
                         {departments.find(d => d.id === ticket.departmentId)?.name}
+                      </span>
+                      <span className="text-[10px] bg-amber-50 text-amber-600 px-1.5 py-0.5 rounded truncate">
+                        {getTicketAssigneeName(ticket)}
                       </span>
                     </div>
                   </button>
@@ -1900,10 +2175,29 @@ export default function App() {
                       </div>
                     </div>
                     <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-1 rounded-lg bg-slate-100 px-2 py-1.5 text-[10px] font-bold text-slate-500">
+                        <UserIcon className="w-3.5 h-3.5" />
+                        {canManageTicketAssignment(selectedTicket) ? (
+                          <select
+                            value={selectedTicket.assignedTo || ''}
+                            onChange={(e) => handleAssignTicket(selectedTicket.id, e.target.value || null)}
+                            className="bg-transparent border-none outline-none text-[10px] font-bold text-slate-600"
+                            title="Atribuir cliente"
+                          >
+                            <option value="">Chefe do departamento</option>
+                            {getDepartmentCollaborators(selectedTicket.departmentId).map(user => (
+                              <option key={user.id} value={user.id}>{user.name}</option>
+                            ))}
+                          </select>
+                        ) : (
+                          <span>{getTicketAssigneeName(selectedTicket)}</span>
+                        )}
+                      </div>
                       <button 
                         onClick={() => handleMoveToNextDept(selectedTicket.id)}
+                        disabled={!canInteractWithTicket(selectedTicket)}
                         title="Mover para Próximo Setor"
-                        className="flex items-center gap-1 px-2 py-1.5 bg-indigo-50 text-indigo-600 rounded-lg text-[10px] font-bold hover:bg-indigo-100 transition-colors border border-indigo-100"
+                        className="flex items-center gap-1 px-2 py-1.5 bg-indigo-50 text-indigo-600 rounded-lg text-[10px] font-bold hover:bg-indigo-100 transition-colors border border-indigo-100 disabled:opacity-40 disabled:cursor-not-allowed"
                       >
                         <ArrowRightCircle className="w-3.5 h-3.5" />
                         Próximo
@@ -1912,6 +2206,10 @@ export default function App() {
                         value={selectedTicket.status}
                         onChange={async (e) => {
                           const newStatus = e.target.value as TicketStatus;
+                          if (!canInteractWithTicket(selectedTicket)) {
+                            alert('Você não tem permissão para alterar este cliente.');
+                            return;
+                          }
                           try {
                             const { error } = await supabase
                               .from('tickets')
@@ -1922,7 +2220,8 @@ export default function App() {
                             console.error('Error updating status:', error);
                           }
                         }}
-                        className="text-[10px] font-bold bg-slate-100 border-none rounded-lg px-2 py-1.5 outline-none"
+                        disabled={!canInteractWithTicket(selectedTicket)}
+                        className="text-[10px] font-bold bg-slate-100 border-none rounded-lg px-2 py-1.5 outline-none disabled:opacity-40"
                       >
                         <option value="Novo">Novo</option>
                         <option value="Orçamento">Orçamento</option>
@@ -2044,7 +2343,8 @@ export default function App() {
                       <button 
                         type="button"
                         onClick={() => fileInputRef.current?.click()}
-                        className="p-1.5 text-slate-400 hover:text-indigo-600 transition-colors"
+                        disabled={!canInteractWithTicket(selectedTicket)}
+                        className="p-1.5 text-slate-400 hover:text-indigo-600 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                       >
                         <Paperclip className="w-4 h-4" />
                       </button>
@@ -2054,7 +2354,7 @@ export default function App() {
                         onChange={(e) => setInputMessage(e.target.value)}
                         placeholder={recordingStatus !== 'idle' ? "Gravando áudio..." : "Mensagem para o cliente..."} 
                         className="flex-1 bg-transparent border-none outline-none text-xs py-1.5"
-                        disabled={recordingStatus !== 'idle'}
+                        disabled={recordingStatus !== 'idle' || !canInteractWithTicket(selectedTicket)}
                       />
                       {recordingStatus !== 'idle' && (
                         <div className="flex items-center gap-1 mr-1">
@@ -2079,8 +2379,10 @@ export default function App() {
                       )}
                       <button 
                         type="submit"
+                        disabled={!canInteractWithTicket(selectedTicket)}
                         className={cn(
                           "p-2 rounded-lg transition-all transform active:scale-95",
+                          !canInteractWithTicket(selectedTicket) ? "bg-slate-200 text-slate-400 cursor-not-allowed" :
                           recordingStatus !== 'idle' ? "bg-red-600 text-white hover:bg-red-700" : 
                           inputMessage.trim() ? "bg-indigo-600 text-white hover:bg-indigo-700 shadow-md" : 
                           "bg-slate-200 text-slate-500 hover:bg-slate-300"
@@ -2118,6 +2420,9 @@ export default function App() {
                     <AnimatePresence initial={false}>
                       {selectedTicket.internalMessages.map((msg) => {
                         const quotedMsg = msg.quotedMessageId ? selectedTicket.messages.find(m => m.id === msg.quotedMessageId) : null;
+                        const transferDepartmentName = getTransferDepartmentName(msg.text);
+                        const departmentAccent = getDepartmentAccent(transferDepartmentName || msg.departmentName);
+                        const isTransferMessage = !!transferDepartmentName;
                         return (
                           <motion.div
                             initial={{ opacity: 0, scale: 0.95 }}
@@ -2126,13 +2431,25 @@ export default function App() {
                             className="flex flex-col w-full group"
                           >
                             <div className={cn(
-                              "bg-white border border-amber-100 p-3 rounded-2xl shadow-sm relative",
+                              "bg-white border border-l-4 border-amber-100 p-3 rounded-2xl shadow-sm relative",
+                              isTransferMessage && "rounded-xl",
                               msg.isFlagged && "border-amber-400 ring-1 ring-amber-400"
-                            )}>
+                            )}
+                              style={isTransferMessage ? {
+                                borderLeftColor: departmentAccent.border,
+                                backgroundColor: departmentAccent.bg
+                              } : {
+                                borderLeftColor: msg.departmentName ? departmentAccent.border : '#fcd34d'
+                              }}
+                            >
                               <div className="flex items-center justify-between mb-1.5">
                                 <div className="flex flex-col">
-                                  <span className="text-[9px] font-bold text-amber-700 flex items-center gap-1">
-                                    <AtSign className="w-2.5 h-2.5" /> {msg.senderName}
+                                  <span
+                                    className="text-[9px] font-bold flex items-center gap-1"
+                                    style={{ color: isTransferMessage ? departmentAccent.text : undefined }}
+                                  >
+                                    {isTransferMessage ? <ArrowRightCircle className="w-2.5 h-2.5" /> : <AtSign className="w-2.5 h-2.5" />}
+                                    {isTransferMessage ? `Transferência para ${transferDepartmentName}` : msg.senderName}
                                   </span>
                                   {msg.departmentName && (
                                     <span className="text-[7px] font-bold text-slate-400 uppercase tracking-tighter">
@@ -2149,7 +2466,7 @@ export default function App() {
                                 </div>
                               )}
                               
-                              <div className="text-xs text-amber-900 leading-relaxed">
+                              <div className={cn("text-xs leading-relaxed", isTransferMessage ? "font-semibold" : "text-amber-900")}>
                                 {renderMessageText(msg.text)}
                               </div>
 
@@ -2195,10 +2512,11 @@ export default function App() {
                         onChange={(e) => setInternalInputMessage(e.target.value)}
                         placeholder="Nota interna ou @alguém..." 
                         className="flex-1 bg-transparent border-none outline-none text-xs py-1.5"
+                        disabled={!canInteractWithTicket(selectedTicket)}
                       />
                       <button 
                         type="submit"
-                        disabled={!internalInputMessage.trim()}
+                        disabled={!internalInputMessage.trim() || !canInteractWithTicket(selectedTicket)}
                         className="bg-amber-600 text-white p-1.5 rounded-lg hover:bg-amber-700 disabled:opacity-50 transition-colors"
                       >
                         <Lock className="w-4 h-4" />
@@ -2512,7 +2830,7 @@ export default function App() {
             </div>
             
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-              {customers.map(c => (
+              {visibleCustomers.map(c => (
                 <div key={c.id} className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm hover:shadow-md transition-shadow">
                   <div className="flex items-center gap-4 mb-4">
                     <div className="w-12 h-12 bg-indigo-100 rounded-full flex items-center justify-center text-indigo-600 font-bold text-lg">
@@ -3096,6 +3414,38 @@ export default function App() {
                     </div>
                   ))}
                 </div>
+              </div>
+            </div>
+
+            <div className="mt-8 bg-white p-8 rounded-3xl border border-slate-200 shadow-sm">
+              <h2 className="text-lg font-bold mb-6 flex items-center gap-2">
+                <Info className="w-5 h-5 text-indigo-600" /> Registros de Atividade
+              </h2>
+              <div className="space-y-3 max-h-96 overflow-y-auto pr-2">
+                {activityLogs.length > 0 ? activityLogs.map(log => (
+                  <div key={log.id} className="flex items-start justify-between gap-4 p-4 bg-slate-50 rounded-xl border border-slate-100">
+                    <div>
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="text-[10px] bg-indigo-50 text-indigo-600 px-1.5 py-0.5 rounded font-bold uppercase">
+                          {getActivityLabel(log.action)}
+                        </span>
+                        <span className="text-[10px] text-slate-400">
+                          {log.actor_name || 'Sistema'}
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-600">
+                        {log.details?.customerName || log.details?.fileName || log.details?.assignedToName || log.entity_type || 'Atividade registrada'}
+                      </p>
+                    </div>
+                    <span className="text-[10px] text-slate-400 whitespace-nowrap">
+                      {log.created_at ? format(new Date(log.created_at), 'dd/MM HH:mm') : ''}
+                    </span>
+                  </div>
+                )) : (
+                  <div className="p-8 border-2 border-dashed border-slate-100 rounded-3xl text-center">
+                    <p className="text-sm text-slate-400">Nenhum registro encontrado. Rode o SQL de logs no Supabase para ativar esta área.</p>
+                  </div>
+                )}
               </div>
             </div>
           </div>
