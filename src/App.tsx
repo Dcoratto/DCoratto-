@@ -113,6 +113,9 @@ export default function App() {
   const [quotedMessageId, setQuotedMessageId] = useState<string | null>(null);
   const [isOnline, setIsOnline] = useState(navigator.onLine);
 
+  const AUTO_PROVISION_EMAIL = 'dcorattoinovacao@gmail.com';
+  const AUTO_PROVISION_PASSWORD = 'sobmedida';
+
   const isAdminRole = (role?: string) => {
     const normalized = (role || '')
       .normalize('NFD')
@@ -120,7 +123,7 @@ export default function App() {
       .trim()
       .toLowerCase();
 
-    return normalized === 'admin' || normalized === 'super admin' || normalized === 'superadmin';
+    return ['admin', 'administrador', 'super admin', 'superadmin', 'super administrador', 'superadministrador'].includes(normalized);
   };
 
   type UploadedFilePayload = {
@@ -189,7 +192,6 @@ export default function App() {
     sender: 'customer' | 'agent';
     upload?: UploadedFilePayload;
   }) => {
-    const ticket = tickets.find(t => t.id === ticketId);
     const attachmentType = upload ? getAttachmentType(upload.mimeType, upload.originalName || upload.fileName) : undefined;
 
     const payload = {
@@ -203,51 +205,20 @@ export default function App() {
       media_size: upload?.size || null
     };
 
-    let insertedMessageId: string | undefined;
-    const { data: msgData, error: msgError } = await supabase
+    const { error: msgError } = await supabase
       .from('messages')
       .insert(payload)
-      .select('id')
-      .single();
 
     if (msgError) {
-      const { data: fallbackMsg, error: fallbackError } = await supabase
+      const { error: fallbackError } = await supabase
         .from('messages')
         .insert({
           ticket_id: ticketId,
           text,
           sender
-        })
-        .select('id')
-        .single();
-
-      if (fallbackError) throw fallbackError;
-      insertedMessageId = fallbackMsg.id;
-    } else {
-      insertedMessageId = msgData.id;
-    }
-
-    if (upload && insertedMessageId && attachmentType) {
-      const { error: attachmentError } = await supabase
-        .from('message_attachments')
-        .insert({
-          message_id: insertedMessageId,
-          ticket_id: ticketId,
-          customer_id: ticket?.customerId,
-          bucket: upload.bucket,
-          storage_path: upload.path,
-          public_url: upload.url,
-          file_name: upload.fileName,
-          original_name: upload.originalName,
-          mime_type: upload.mimeType,
-          file_size: upload.size,
-          attachment_type: attachmentType,
-          uploaded_by: currentUser?.id
         });
 
-      if (attachmentError) {
-        console.warn('[ATTACHMENTS] Metadata table unavailable or insert failed:', attachmentError.message);
-      }
+      if (fallbackError) throw fallbackError;
     }
 
     await supabase
@@ -305,22 +276,24 @@ export default function App() {
       if (error) throw error;
 
       if (data) {
+        const profileRole = data.role || (userEmail.toLowerCase() === AUTO_PROVISION_EMAIL ? 'Super Admin' : 'Colaborador');
         setCurrentUser({
           id: data.id,
           name: data.name,
           email: data.email,
-          role: data.role as UserRole,
+          role: profileRole as UserRole,
           departmentId: data.department_id
         });
       } else {
         const fallbackName = userEmail ? userEmail.split('@')[0] : 'Usuario';
+        const fallbackRole = userEmail.toLowerCase() === AUTO_PROVISION_EMAIL ? 'Super Admin' : 'Colaborador';
         const { data: createdProfile, error: createProfileError } = await supabase
           .from('profiles')
           .insert({
             id: userId,
             name: fallbackName,
             email: userEmail,
-            role: 'Colaborador'
+            role: fallbackRole
           })
           .select()
           .maybeSingle();
@@ -345,9 +318,6 @@ export default function App() {
       setAuthSubmitting(false);
     }
   };
-
-  const AUTO_PROVISION_EMAIL = 'dcorattoinovacao@gmail.com';
-  const AUTO_PROVISION_PASSWORD = 'sobmedida';
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -596,16 +566,14 @@ export default function App() {
         { data: custs },
         { data: ticks },
         { data: invs },
-        { data: docs },
-        { data: messageAttachments }
+        { data: docs }
       ] = await Promise.all([
         supabase.from('departments').select('*'),
         supabase.from('profiles').select('*'),
         supabase.from('customers').select('*'),
         supabase.from('tickets').select('*, messages(*), internal_messages(*)'),
         supabase.from('invitations').select('*'),
-        supabase.from('ticket_documents').select('*'),
-        supabase.from('message_attachments').select('*')
+        supabase.from('ticket_documents').select('*')
       ]);
 
       if (depts) {
@@ -633,24 +601,6 @@ export default function App() {
         createdAt: new Date(d.created_at)
       }));
 
-      const attachments: MessageAttachment[] = (messageAttachments || []).map((a: any) => ({
-        id: a.id,
-        messageId: a.message_id,
-        internalMessageId: a.internal_message_id,
-        ticketId: a.ticket_id,
-        customerId: a.customer_id,
-        bucket: a.bucket,
-        storagePath: a.storage_path,
-        publicUrl: a.public_url,
-        fileName: a.file_name,
-        originalName: a.original_name,
-        mimeType: a.mime_type,
-        fileSize: a.file_size,
-        attachmentType: a.attachment_type,
-        uploadedBy: a.uploaded_by,
-        createdAt: new Date(a.created_at)
-      }));
-
       if (ticks) {
         const formattedTickets: Ticket[] = ticks.map(t => ({
           id: t.id,
@@ -669,7 +619,6 @@ export default function App() {
             mediaMimeType: m.media_mime_type,
             mediaFileName: m.media_file_name,
             mediaSize: m.media_size,
-            attachments: attachments.filter(a => a.messageId === m.id),
             isFlagged: m.is_flagged,
             flaggedBy: m.flagged_by,
             flaggedAt: m.flagged_at ? new Date(m.flagged_at) : undefined
