@@ -957,7 +957,40 @@ export default function App() {
   };
 
   const handleSettings = () => {
-    alert('Configurações do Sistema:\n- WhatsApp: Conectado\n- Banco de Dados: Supabase\n- Versão: 1.0.0');
+    const isAdmin = currentUser?.role === 'Super Admin' || currentUser?.role === 'Admin';
+    if (!isAdmin) {
+      alert('Você não tem permissão para acessar as configurações do sistema.');
+      return;
+    }
+    setActiveTab('admin');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const handleDeleteUser = async (userId: string) => {
+    if (!currentUser) return;
+    if (userId === currentUser.id) {
+      alert('Você não pode excluir sua própria conta logada.');
+      return;
+    }
+    if (!confirm('Tem certeza que deseja excluir este colaborador do sistema?')) return;
+
+    try {
+      const { error } = await supabase
+        .from('profiles')
+        .delete()
+        .eq('id', userId);
+
+      if (error) throw error;
+      setUsers(prev => prev.filter(u => u.id !== userId));
+      if (editingUser === userId) {
+        setEditingUser(null);
+        setEditUserData({});
+      }
+      alert('Colaborador excluído com sucesso.');
+    } catch (error: any) {
+      console.error('Error deleting user:', error);
+      alert('Erro ao excluir colaborador: ' + (error?.message || error));
+    }
   };
 
   const updateRecordingStatus = (status: 'idle' | 'recording' | 'paused') => {
@@ -1766,7 +1799,7 @@ export default function App() {
           {(currentUser?.role === 'Super Admin' || currentUser?.role === 'Admin') && (
             <button 
               onClick={() => setActiveTab('admin')}
-              title="Administração"
+              title="Configurações do Sistema"
               className={cn(
                 "p-3 rounded-xl transition-all",
                 activeTab === 'admin' ? "bg-indigo-50 text-indigo-600" : "text-slate-400 hover:bg-slate-100 hover:text-slate-600"
@@ -1781,7 +1814,10 @@ export default function App() {
         <div className="flex flex-col gap-2 mt-auto">
           <button 
             onClick={handleSettings}
-            className="p-3 text-slate-400 hover:bg-slate-100 hover:text-indigo-600 rounded-xl transition-all"
+            className={cn(
+              "p-3 rounded-xl transition-all",
+              activeTab === 'admin' ? "bg-indigo-50 text-indigo-600" : "text-slate-400 hover:bg-slate-100 hover:text-indigo-600"
+            )}
             title="Configurações"
           >
             <Settings className="w-6 h-6" />
@@ -2527,7 +2563,10 @@ export default function App() {
       {activeTab === 'admin' && (
         <main className="flex-1 p-10 overflow-y-auto">
           <div className="max-w-5xl mx-auto">
-            <h1 className="text-2xl font-bold mb-8">Gestão de Equipe e Departamentos</h1>
+            <h1 className="text-2xl font-bold mb-2">Configurações do Sistema</h1>
+            <p className="text-sm text-slate-500 mb-8">
+              Gestão de departamentos com ordem de fluxo, colaboradores e conexão do WhatsApp por QR Code ou número.
+            </p>
             
             {/* Invite Collaborator Section */}
             <div className="mb-10 bg-white p-8 rounded-3xl border border-slate-200 shadow-sm hover:shadow-md transition-shadow">
@@ -3049,18 +3088,26 @@ export default function App() {
                         )}
                       </div>
                       {editingUser !== user.id && (
-                        <button 
-                          onClick={() => {
-                            setEditingUser(user.id);
-                            setEditUserData({
-                              role: user.role,
-                              departmentId: user.departmentId
-                            });
-                          }}
-                          className="text-xs font-bold text-indigo-600 hover:underline"
-                        >
-                          Configurar
-                        </button>
+                        <div className="flex items-center gap-3">
+                          <button 
+                            onClick={() => {
+                              setEditingUser(user.id);
+                              setEditUserData({
+                                role: user.role,
+                                departmentId: user.departmentId
+                              });
+                            }}
+                            className="text-xs font-bold text-indigo-600 hover:underline"
+                          >
+                            Configurar
+                          </button>
+                          <button
+                            onClick={() => handleDeleteUser(user.id)}
+                            className="text-xs font-bold text-red-600 hover:underline"
+                          >
+                            Excluir
+                          </button>
+                        </div>
                       )}
                     </div>
                   ))}
