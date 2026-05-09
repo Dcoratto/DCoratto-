@@ -1,6 +1,6 @@
 export type TicketStatus = 'Novo' | 'Orçamento' | 'Projeto' | 'Produção' | 'Instalação' | 'Finalizado';
 export type UserRole = 'Super Admin' | 'Admin' | 'Colaborador';
-export type DepartmentName = 'Comercial' | 'Financeiro' | 'Libera��o' | 'Log�stica' | 'Montagem' | 'Sucesso do Cliente';
+export type DepartmentName = 'Comercial' | 'Financeiro' | 'Liberação' | 'Logística' | 'Montagem' | 'Sucesso do Cliente';
 
 export interface WhatsAppConfig {
   phoneNumber: string;
