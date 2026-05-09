@@ -113,6 +113,16 @@ export default function App() {
   const [quotedMessageId, setQuotedMessageId] = useState<string | null>(null);
   const [isOnline, setIsOnline] = useState(navigator.onLine);
 
+  const isAdminRole = (role?: string) => {
+    const normalized = (role || '')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .trim()
+      .toLowerCase();
+
+    return normalized === 'admin' || normalized === 'super admin' || normalized === 'superadmin';
+  };
+
   type UploadedFilePayload = {
     url: string;
     bucket: string;
@@ -749,7 +759,7 @@ export default function App() {
   // Filter tickets based on role
   const filteredTickets = tickets.filter(t => {
     if (!currentUser) return false;
-    if (currentUser.role === 'Super Admin' || currentUser.role === 'Admin') return true;
+    if (isAdminRole(currentUser.role)) return true;
     return t.departmentId === currentUser.departmentId;
   });
 
@@ -956,9 +966,10 @@ export default function App() {
     }
   };
 
+  const canAccessSystemSettings = isAdminRole(currentUser?.role);
+
   const handleSettings = () => {
-    const isAdmin = currentUser?.role === 'Super Admin' || currentUser?.role === 'Admin';
-    if (!isAdmin) {
+    if (!canAccessSystemSettings) {
       alert('Você não tem permissão para acessar as configurações do sistema.');
       return;
     }
@@ -1796,7 +1807,7 @@ export default function App() {
           >
             <LayoutDashboard className="w-6 h-6" />
           </button>
-          {(currentUser?.role === 'Super Admin' || currentUser?.role === 'Admin') && (
+          {canAccessSystemSettings && (
             <button 
               onClick={() => setActiveTab('admin')}
               title="Configurações do Sistema"
@@ -1812,16 +1823,18 @@ export default function App() {
 
         {/* Action Buttons */}
         <div className="flex flex-col gap-2 mt-auto">
-          <button 
-            onClick={handleSettings}
-            className={cn(
-              "p-3 rounded-xl transition-all",
-              activeTab === 'admin' ? "bg-indigo-50 text-indigo-600" : "text-slate-400 hover:bg-slate-100 hover:text-indigo-600"
-            )}
-            title="Configurações"
-          >
-            <Settings className="w-6 h-6" />
-          </button>
+          {canAccessSystemSettings && (
+            <button 
+              onClick={handleSettings}
+              className={cn(
+                "p-3 rounded-xl transition-all",
+                activeTab === 'admin' ? "bg-indigo-50 text-indigo-600" : "text-slate-400 hover:bg-slate-100 hover:text-indigo-600"
+              )}
+              title="Configurações"
+            >
+              <Settings className="w-6 h-6" />
+            </button>
+          )}
           
           <button 
             onClick={handleLogout}
