@@ -93,7 +93,7 @@ async function startServer() {
   const APP_URL = process.env.APP_URL;
   const AUTO_START_WHATSAPP = process.env.AUTO_START_WHATSAPP
     ? process.env.AUTO_START_WHATSAPP !== 'false'
-    : process.env.NODE_ENV !== 'production';
+    : true;
 
   app.use((req, _res, next) => {
     console.log(`[HTTP] ${req.method} ${req.originalUrl}`);
@@ -135,6 +135,21 @@ async function startServer() {
   let reconnectionAttempts = 0;
   let isConnecting = false;
   const MAX_RECONNECT_ATTEMPTS = 15; // Further increased for stability
+
+  const normalizeWhatsAppPhone = (phone: string) => {
+    const digits = phone.replace(/\D/g, '');
+    if ((digits.length === 10 || digits.length === 11) && !digits.startsWith('55')) {
+      return `55${digits}`;
+    }
+    return digits;
+  };
+
+  const ensureWhatsAppStarted = () => {
+    if (!AUTO_START_WHATSAPP) return;
+    if (connectionStatus === 'connected' || isConnecting || sock) return;
+    console.log('[WA] Auto-starting WhatsApp connection from status check...');
+    connectToWhatsApp().catch(error => console.error('[WA] Auto-start failed:', error));
+  };
 
   async function connectToWhatsApp() {
     if (isConnecting) {
@@ -389,10 +404,10 @@ async function startServer() {
               else text = `[FILE]${mediaUrl}`;
             } catch (downloadError) {
               console.error(`[WA-IN-ERROR] Failed to download ${mType}:`, downloadError);
-              text = `⚠️ [ERRO AO BAIXAR ${mType.toUpperCase()}]`;
+              text = `âš ï¸ [ERRO AO BAIXAR ${mType.toUpperCase()}]`;
             }
           } else if (msg.message.stickerMessage) {
-            text = "🎨 [Sticker]";
+            text = "ðŸŽ¨ [Sticker]";
           }
 
           if (!text) {
@@ -629,6 +644,7 @@ async function startServer() {
   
   // Get WhatsApp QR Code and Status
   app.get("/api/whatsapp/status", (req, res) => {
+    ensureWhatsAppStarted();
     res.json({ 
       status: connectionStatus, 
       qr: qrCodeData,
@@ -658,8 +674,9 @@ async function startServer() {
 
       if (!sock) throw new Error('Failed to initialize WhatsApp socket');
 
-      console.log(`[WA] Requesting pairing code for ${phone}`);
-      const code = await sock.requestPairingCode(phone.replace(/\D/g, ''));
+      const normalizedPhone = normalizeWhatsAppPhone(phone);
+      console.log(`[WA] Requesting pairing code for ${normalizedPhone}`);
+      const code = await sock.requestPairingCode(normalizedPhone);
       pairingCode = code;
       res.json({ success: true, code });
     } catch (error) {
@@ -704,11 +721,11 @@ async function startServer() {
     
     if (connectionStatus === 'connected' && sock) {
       try {
-        const jid = to.replace(/\D/g, '') + '@s.whatsapp.net';
+        const jid = normalizeWhatsAppPhone(to) + '@s.whatsapp.net';
         
         // Handle Media Messages
-        if (message.startsWith('[IMAGE]') || message.startsWith('📷 [IMAGE]')) {
-          const url = message.replace('[IMAGE]', '').replace('📷 [IMAGE]', '');
+        if (message.startsWith('[IMAGE]') || message.startsWith('ðŸ“· [IMAGE]')) {
+          const url = message.replace('[IMAGE]', '').replace('ðŸ“· [IMAGE]', '');
           // If it's a local path /media/..., we need to read it from disk
           if (url.startsWith('/media/')) {
             const fileName = url.replace('/media/', '');
@@ -725,8 +742,8 @@ async function startServer() {
             return res.status(400).json({ success: false, error: 'Cannot send blob URL' });
           }
           await sock.sendMessage(jid, { image: { url: finalUrl } });
-        } else if (message.startsWith('[AUDIO]') || message.startsWith('🎤 [AUDIO]')) {
-          const url = message.replace('[AUDIO]', '').replace('🎤 [AUDIO]', '');
+        } else if (message.startsWith('[AUDIO]') || message.startsWith('ðŸŽ¤ [AUDIO]')) {
+          const url = message.replace('[AUDIO]', '').replace('ðŸŽ¤ [AUDIO]', '');
           if (url.startsWith('/media/')) {
             const fileName = url.replace('/media/', '');
             const filePath = path.join(mediaDir, fileName);
@@ -741,16 +758,16 @@ async function startServer() {
             return res.status(400).json({ success: false, error: 'Cannot send blob URL' });
           }
           await sock.sendMessage(jid, { audio: { url: finalUrl }, mimetype: 'audio/mp4', ptt: true });
-        } else if (message.startsWith('[VIDEO]') || message.startsWith('🎥 [VIDEO]')) {
-          const url = message.replace('[VIDEO]', '').replace('🎥 [VIDEO]', '');
+        } else if (message.startsWith('[VIDEO]') || message.startsWith('ðŸŽ¥ [VIDEO]')) {
+          const url = message.replace('[VIDEO]', '').replace('ðŸŽ¥ [VIDEO]', '');
           const finalUrl = (url.startsWith('http') || url.startsWith('blob:')) ? url : `${getPublicBaseUrl(req)}${url}`;
           if (finalUrl.startsWith('blob:')) {
             console.error('[WA] Cannot send blob URL to WhatsApp. Client must upload file first.');
             return res.status(400).json({ success: false, error: 'Cannot send blob URL' });
           }
           await sock.sendMessage(jid, { video: { url: finalUrl } });
-        } else if (message.startsWith('[FILE]') || message.startsWith('📄 [FILE]')) {
-          const url = message.replace('[FILE]', '').replace('📄 [FILE]', '');
+        } else if (message.startsWith('[FILE]') || message.startsWith('ðŸ“„ [FILE]')) {
+          const url = message.replace('[FILE]', '').replace('ðŸ“„ [FILE]', '');
           const finalUrl = (url.startsWith('http') || url.startsWith('blob:')) ? url : `${getPublicBaseUrl(req)}${url}`;
           if (finalUrl.startsWith('blob:')) {
             console.error('[WA] Cannot send blob URL to WhatsApp. Client must upload file first.');
@@ -848,3 +865,4 @@ async function startServer() {
 }
 
 startServer();
+
