@@ -343,20 +343,61 @@ export default function App() {
       .eq('id', ticketId);
   };
 
+  const isSupabaseNetworkError = (error: any) => {
+    const message = String(error?.message || error || '').toLowerCase();
+    return (
+      message.includes('failed to fetch') ||
+      message.includes('networkerror') ||
+      message.includes('err_name_not_resolved') ||
+      message.includes('load failed')
+    );
+  };
+
+  const getSupabaseErrorMessage = (error: any) => {
+    if (isSupabaseNetworkError(error)) {
+      return 'Não foi possível conectar ao Supabase. Verifique se VITE_SUPABASE_URL aponta para um projeto ativo e se a rede/DNS consegue resolver o domínio.';
+    }
+
+    return error?.message || 'Erro ao conectar com Supabase.';
+  };
+
+  const clearLocalAuthSession = async () => {
+    try {
+      await supabase.auth.signOut({ scope: 'local' });
+    } catch (error) {
+      console.warn('[AUTH] Não foi possível limpar a sessão local:', error);
+    }
+  };
+
   // Authentication and Session Management
   useEffect(() => {
+    let isMounted = true;
+
     // Check current session
     supabase.auth.getSession().then(({ data: { session } }) => {
+      if (!isMounted) return;
       setSession(session);
       if (session) {
         fetchUserProfile(session.user.id, session.user.email || '');
       } else {
         setAuthLoading(false);
       }
+    }).catch(async (error) => {
+      console.error('[AUTH] Erro ao recuperar sessão:', error);
+      await clearLocalAuthSession();
+      if (!isMounted) return;
+      const friendlyMessage = getSupabaseErrorMessage(error);
+      setSession(null);
+      setCurrentUser(null);
+      setAuthError(friendlyMessage);
+      setSupabaseStatus('error');
+      setSupabaseError(friendlyMessage);
+      setAuthLoading(false);
     });
 
     // Listen for auth changes
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (!isMounted) return;
       setSession(session);
       if (session) {
         fetchUserProfile(session.user.id, session.user.email || '');
@@ -366,7 +407,10 @@ export default function App() {
       }
     });
 
-    return () => subscription.unsubscribe();
+    return () => {
+      isMounted = false;
+      subscription.unsubscribe();
+    };
   }, []);
 
   const withTimeout = async <T,>(promise: Promise<T>, timeoutMs = 15000): Promise<T> => {
@@ -528,6 +572,14 @@ export default function App() {
         await fetchUserProfile(data.user.id, data.user.email || normalizedEmail);
       }
     } catch (err: any) {
+      if (isSupabaseNetworkError(err)) {
+        await clearLocalAuthSession();
+        setAuthError(getSupabaseErrorMessage(err));
+        setSupabaseStatus('error');
+        setSupabaseError(getSupabaseErrorMessage(err));
+        return;
+      }
+
       const shouldAutoProvision =
         normalizedEmail === AUTO_PROVISION_EMAIL &&
         password === AUTO_PROVISION_PASSWORD;
@@ -575,6 +627,14 @@ export default function App() {
             return;
           }
         } catch (provisionErr: any) {
+          if (isSupabaseNetworkError(provisionErr)) {
+            await clearLocalAuthSession();
+            setAuthError(getSupabaseErrorMessage(provisionErr));
+            setSupabaseStatus('error');
+            setSupabaseError(getSupabaseErrorMessage(provisionErr));
+            return;
+          }
+
           setAuthError(
             provisionErr?.message ||
             'Nao foi possivel criar/login desse usuario automaticamente.'
@@ -617,14 +677,31 @@ export default function App() {
       }
       alert('Cadastro realizado! Verifique seu e-mail para confirmar.');
     } catch (err: any) {
-      setAuthError(err.message || 'Erro ao cadastrar');
+      if (isSupabaseNetworkError(err)) {
+        await clearLocalAuthSession();
+        setAuthError(getSupabaseErrorMessage(err));
+        setSupabaseStatus('error');
+        setSupabaseError(getSupabaseErrorMessage(err));
+      } else {
+        setAuthError(err.message || 'Erro ao cadastrar');
+      }
     } finally {
       setAuthSubmitting(false);
     }
   };
 
   const handleLogout = async () => {
-    await supabase.auth.signOut();
+    try {
+      await supabase.auth.signOut();
+    } catch (error) {
+      if (isSupabaseNetworkError(error)) {
+        await clearLocalAuthSession();
+        setSession(null);
+        setCurrentUser(null);
+      } else {
+        throw error;
+      }
+    }
   };
 
   const [recordingStatus, setRecordingStatus] = useState<'idle' | 'recording' | 'paused'>('idle');
@@ -1116,7 +1193,7 @@ export default function App() {
     } catch (error) {
       console.error('[SUPABASE] Error fetching data:', error);
       setSupabaseStatus('error');
-      setSupabaseError(error instanceof Error ?error.message : String(error));
+      setSupabaseError(getSupabaseErrorMessage(error));
     } finally {
       if (isInitial) setLoading(false);
     }
