@@ -17,10 +17,20 @@ Copie `.env.example` para `.env` e preencha:
 
 - `VITE_SUPABASE_URL`
 - `VITE_SUPABASE_ANON_KEY`
+- `SUPABASE_SERVICE_ROLE_KEY` (necessaria para criar/confirmar/resetar o admin automaticamente pelo servidor)
 - `GEMINI_API_KEY` (se usar Gemini)
 - `APP_URL` (URL publica da aplicacao em producao)
 - `PORT` (opcional, padrao: `3000`)
 - `WHATSAPP_API_KEY`, `WHATSAPP_PHONE_NUMBER_ID`, `RESEND_API_KEY` (opcionais)
+
+## Banco de dados
+
+Rode o conteudo de `supabase_schema.sql` no SQL Editor do Supabase. Esse script e idempotente e nao apaga dados existentes.
+
+O login administrativo padrao e:
+
+- E-mail: `dcorattoinovacao@gmail.com`
+- Senha: `sob_medida`
 
 ## Rodar local
 

@@ -104,6 +104,26 @@ export default function App() {
   const [waStatus, setWaStatus] = useState<'disconnected' | 'connecting' | 'connected'>('disconnected');
   const [waMaxReached, setWaMaxReached] = useState(false);
 
+  type CompanySettings = {
+    companyName: string;
+    companyEmail: string;
+    companyPhone: string;
+    companyAddress: string;
+    logoUrl: string;
+  };
+
+  const defaultCompanySettings: CompanySettings = {
+    companyName: 'DCoratto',
+    companyEmail: '',
+    companyPhone: '',
+    companyAddress: '',
+    logoUrl: officialLogoPath
+  };
+
+  const [companySettings, setCompanySettings] = useState<CompanySettings>(defaultCompanySettings);
+  const [companySettingsDraft, setCompanySettingsDraft] = useState<CompanySettings>(defaultCompanySettings);
+  const [isSavingCompanySettings, setIsSavingCompanySettings] = useState(false);
+
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [users, setUsers] = useState<User[]>([]);
   const [invitations, setInvitations] = useState<Invitation[]>([]);
@@ -134,7 +154,8 @@ export default function App() {
   const [openTicketMenuId, setOpenTicketMenuId] = useState<string | null>(null);
 
   const AUTO_PROVISION_EMAIL = 'dcorattoinovacao@gmail.com';
-  const AUTO_PROVISION_PASSWORD = 'sobmedida';
+  const AUTO_PROVISION_PASSWORD = 'sob_medida';
+  const AUTO_PROVISION_NAME = 'dcorattoinovacao';
 
   const isAdminRole = (role?: string) => {
     const normalized = (role || '')
@@ -163,6 +184,31 @@ export default function App() {
   };
 
   const isPrimaryAdminEmail = (userEmail?: string) => userEmail?.trim().toLowerCase() === AUTO_PROVISION_EMAIL;
+
+  const mapProfileToUser = (profile: any): User => ({
+    id: profile.id,
+    name: profile.name || profile.email?.split('@')[0] || 'Usuario',
+    email: profile.email,
+    role: (profile.role || 'Colaborador') as UserRole,
+    departmentId: profile.department_id || undefined
+  });
+
+  const mapInvitation = (invitation: any): Invitation => ({
+    id: invitation.id,
+    email: invitation.email,
+    role: invitation.role as UserRole,
+    departmentId: invitation.department_id || '',
+    status: invitation.status,
+    createdAt: new Date(invitation.created_at)
+  });
+
+  const mapCompanySettings = (settings?: any): CompanySettings => ({
+    companyName: settings?.company_name || defaultCompanySettings.companyName,
+    companyEmail: settings?.company_email || '',
+    companyPhone: settings?.company_phone || '',
+    companyAddress: settings?.company_address || '',
+    logoUrl: settings?.logo_url || defaultCompanySettings.logoUrl
+  });
 
   type UploadedFilePayload = {
     url: string;
@@ -243,20 +289,52 @@ export default function App() {
       media_size: upload?.size || null
     };
 
-    const { error: msgError } = await supabase
+    let insertedMessageId: string | null = null;
+    const { data: insertedMessage, error: msgError } = await supabase
       .from('messages')
       .insert(payload)
+      .select('id')
+      .maybeSingle();
 
     if (msgError) {
-      const { error: fallbackError } = await supabase
+      const { data: fallbackMessage, error: fallbackError } = await supabase
         .from('messages')
         .insert({
           ticket_id: ticketId,
           text,
           sender
-        });
+        })
+        .select('id')
+        .maybeSingle();
 
       if (fallbackError) throw fallbackError;
+      insertedMessageId = fallbackMessage?.id || null;
+    } else {
+      insertedMessageId = insertedMessage?.id || null;
+    }
+
+    if (upload && insertedMessageId && attachmentType) {
+      const ticket = ticketsRef.current.find(item => item.id === ticketId);
+      const { error: attachmentError } = await supabase
+        .from('message_attachments')
+        .insert({
+          message_id: insertedMessageId,
+          ticket_id: ticketId,
+          customer_id: ticket?.customerId || null,
+          bucket: upload.bucket,
+          storage_path: upload.path,
+          public_url: upload.url,
+          file_name: upload.fileName,
+          original_name: upload.originalName,
+          mime_type: upload.mimeType,
+          file_size: upload.size,
+          attachment_type: attachmentType,
+          uploaded_by: currentUserRef.current?.id || null
+        });
+
+      if (attachmentError) {
+        console.warn('[ATTACHMENT] Metadata not saved:', attachmentError.message);
+      }
     }
 
     await supabase
@@ -346,20 +424,17 @@ export default function App() {
       if (error) throw error;
 
       if (data) {
-        const shouldPromotePrimaryAdmin = isPrimaryAdminEmail(data.email || userEmail) && !isAdminRole(data.role);
-        const profileRole = shouldPromotePrimaryAdmin ?'Super Admin' : (data.role || 'Colaborador');
-        const loggedUser = {
-          id: data.id,
-          name: data.name,
-          email: data.email,
-          role: profileRole as UserRole,
-          departmentId: data.department_id
-        };
+        const shouldPromotePrimaryAdmin = isPrimaryAdminEmail(data.email || userEmail) && (!isAdminRole(data.role) || data.department_id);
+        const loggedUser = mapProfileToUser({
+          ...data,
+          role: shouldPromotePrimaryAdmin ?'Super Admin' : data.role,
+          department_id: shouldPromotePrimaryAdmin ?null : data.department_id
+        });
 
         if (shouldPromotePrimaryAdmin) {
           await supabase
             .from('profiles')
-            .update({ role: 'Super Admin' })
+            .update({ role: 'Super Admin', department_id: null })
             .eq('id', userId);
         }
 
@@ -372,29 +447,26 @@ export default function App() {
           details: { role: loggedUser.role, departmentId: loggedUser.departmentId }
         });
       } else {
-        const fallbackName = userEmail ?userEmail.split('@')[0] : 'Usuario';
+        const fallbackName = isPrimaryAdminEmail(userEmail)
+          ?AUTO_PROVISION_NAME
+          : userEmail ?userEmail.split('@')[0] : 'Usuario';
         const fallbackRole = isPrimaryAdminEmail(userEmail) ?'Super Admin' : 'Colaborador';
         const { data: createdProfile, error: createProfileError } = await supabase
           .from('profiles')
-          .insert({
+          .upsert({
             id: userId,
             name: fallbackName,
             email: userEmail,
-            role: fallbackRole
-          })
+            role: fallbackRole,
+            department_id: null
+          }, { onConflict: 'id' })
           .select()
           .maybeSingle();
 
         if (createProfileError) throw createProfileError;
 
         if (createdProfile) {
-          const createdUser = {
-            id: createdProfile.id,
-            name: createdProfile.name,
-            email: createdProfile.email,
-            role: createdProfile.role as UserRole,
-            departmentId: createdProfile.department_id
-          };
+          const createdUser = mapProfileToUser(createdProfile);
           setCurrentUser(createdUser);
           insertActivityLog({
             actor: createdUser,
@@ -414,12 +486,40 @@ export default function App() {
     }
   };
 
+  const bootstrapPrimaryAdmin = async (normalizedEmail: string, passwordValue: string) => {
+    if (!isPrimaryAdminEmail(normalizedEmail) || passwordValue !== AUTO_PROVISION_PASSWORD) return false;
+
+    try {
+      const response = await fetch('/api/bootstrap/admin', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: normalizedEmail,
+          password: passwordValue
+        })
+      });
+
+      if (!response.ok) {
+        const data = await response.json().catch(() => null);
+        console.warn('[AUTH] Admin bootstrap skipped:', data?.error || response.statusText);
+        return false;
+      }
+
+      const data = await response.json();
+      return !!data.success;
+    } catch (error) {
+      console.warn('[AUTH] Admin bootstrap unavailable:', error);
+      return false;
+    }
+  };
+
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setAuthSubmitting(true);
     setAuthError(null);
     const normalizedEmail = email.trim().toLowerCase();
     try {
+      await bootstrapPrimaryAdmin(normalizedEmail, password);
       const { data, error } = await withTimeout(
         supabase.auth.signInWithPassword({ email: normalizedEmail, password })
       );
@@ -493,13 +593,14 @@ export default function App() {
     e.preventDefault();
     setAuthSubmitting(true);
     setAuthError(null);
+    const normalizedEmail = email.trim().toLowerCase();
     try {
       const { data, error } = await withTimeout(supabase.auth.signUp({ 
-        email: email.trim(), 
+        email: normalizedEmail, 
         password,
         options: {
           data: {
-            full_name: email.trim().split('@')[0]
+            full_name: normalizedEmail.split('@')[0]
           }
         }
       }));
@@ -507,12 +608,12 @@ export default function App() {
 
       if (data.user) {
         // Create initial profile
-        await supabase.from('profiles').insert({
+        await supabase.from('profiles').upsert({
           id: data.user.id,
-          name: email.trim().split('@')[0],
-          email: email.trim(),
+          name: normalizedEmail.split('@')[0],
+          email: normalizedEmail,
           role: 'Colaborador'
-        });
+        }, { onConflict: 'id' });
       }
       alert('Cadastro realizado! Verifique seu e-mail para confirmar.');
     } catch (err: any) {
@@ -681,6 +782,7 @@ export default function App() {
       login: 'Login',
       document_upload: 'Documento enviado',
       media_upload: 'Mídia enviada',
+      company_settings_updated: 'Empresa atualizada',
       ticket_assigned: 'Cliente atribuído',
       ticket_unassigned: 'Cliente voltou ao Gestor'
     };
@@ -882,12 +984,12 @@ export default function App() {
     try {
       setSupabaseError(null);
       const [
-        { data: depts },
-        { data: profs },
-        { data: custs },
-        { data: ticks },
-        { data: invs },
-        { data: docs }
+        deptsResult,
+        profsResult,
+        custsResult,
+        ticksResult,
+        invsResult,
+        docsResult
       ] = await Promise.all([
         supabase.from('departments').select('*'),
         supabase.from('profiles').select('*'),
@@ -896,6 +998,24 @@ export default function App() {
         supabase.from('invitations').select('*'),
         supabase.from('ticket_documents').select('*')
       ]);
+
+      const coreResults = [
+        deptsResult,
+        profsResult,
+        custsResult,
+        ticksResult,
+        invsResult,
+        docsResult
+      ];
+      const failedResult = coreResults.find(result => result.error);
+      if (failedResult?.error) throw failedResult.error;
+
+      const depts = deptsResult.data || [];
+      const profs = profsResult.data || [];
+      const custs = custsResult.data || [];
+      const ticks = ticksResult.data || [];
+      const invs = invsResult.data || [];
+      const docs = docsResult.data || [];
 
       if (depts) {
         // Sort by sequence if available, otherwise by created_at or name
@@ -907,9 +1027,9 @@ export default function App() {
         })));
         if (sorted.length > 0 && !inviteDept) setInviteDept(sorted[0].id);
       }
-      if (profs) setUsers(profs.map(p => ({ ...p, role: p.role as UserRole })));
+      if (profs) setUsers(profs.map(mapProfileToUser));
       if (custs) setCustomers(custs);
-      if (invs) setInvitations(invs.map(i => ({ ...i, role: i.role as UserRole, createdAt: new Date(i.created_at) })));
+      if (invs) setInvitations(invs.filter((i: any) => i.status === 'Pendente').map(mapInvitation));
 
       const { data: logs, error: logsError } = await supabase
         .from('activity_logs')
@@ -920,6 +1040,20 @@ export default function App() {
       if (!logsError && logs) {
         setActivityLogs(logs);
       }
+
+      const { data: companyRows, error: companyError } = await supabase
+        .from('company_settings')
+        .select('*')
+        .eq('id', 'default')
+        .maybeSingle();
+
+      if (!companyError && companyRows) {
+        const mappedCompanySettings = mapCompanySettings(companyRows);
+        setCompanySettings(mappedCompanySettings);
+        setCompanySettingsDraft(mappedCompanySettings);
+      } else if (companyError) {
+        console.warn('[COMPANY_SETTINGS] Tabela indisponivel:', companyError.message);
+      }
       
       const ticketDocs = (docs || []).map((d: any) => ({
         id: d.id,
@@ -929,6 +1063,8 @@ export default function App() {
         name: d.name,
         fileUrl: d.file_url,
         fileType: d.file_type,
+        storagePath: d.storage_path,
+        bucket: d.bucket,
         uploadedBy: d.uploaded_by,
         createdAt: new Date(d.created_at)
       }));
@@ -1080,13 +1216,14 @@ export default function App() {
   const handleSendInvite = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!inviteEmail.trim()) return;
+    const normalizedInviteEmail = inviteEmail.trim().toLowerCase();
 
     try {
       const response = await fetch('/api/invite', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
-          email: inviteEmail, 
+          email: normalizedInviteEmail, 
           department: inviteDept, 
           role: inviteRole 
         })
@@ -1094,22 +1231,38 @@ export default function App() {
       
       const data = await response.json();
 
-      const { data: newInvite, error } = await supabase
+      const { data: existingInvite } = await supabase
         .from('invitations')
-        .insert({
-          email: inviteEmail,
-          department_id: inviteDept,
-          role: inviteRole,
-          status: 'Pendente'
-        })
+        .select('*')
+        .ilike('email', normalizedInviteEmail)
+        .eq('department_id', inviteDept)
+        .eq('status', 'Pendente')
+        .maybeSingle();
+
+      const inviteMutation = existingInvite
+        ? supabase
+          .from('invitations')
+          .update({ role: inviteRole, status: 'Pendente' })
+          .eq('id', existingInvite.id)
+        : supabase
+          .from('invitations')
+          .insert({
+            email: normalizedInviteEmail,
+            department_id: inviteDept,
+            role: inviteRole,
+            status: 'Pendente'
+          });
+
+      const { data: newInvite, error } = await inviteMutation
         .select()
         .single();
 
       if (error) throw error;
+      const mappedInvite = mapInvitation(newInvite);
 
-      setInvitations([
-        { ...newInvite, departmentId: newInvite.department_id, role: newInvite.role as UserRole, createdAt: new Date(newInvite.created_at) },
-        ...invitations
+      setInvitations(prev => [
+        mappedInvite,
+        ...prev.filter(item => item.id !== mappedInvite.id)
       ]);
       setInviteEmail('');
       alert(data.status === 'simulated' ?'Convite simulado com sucesso!' : 'Convite enviado por e-mail!');
@@ -1119,17 +1272,37 @@ export default function App() {
     }
   };
 
-  const handleAcceptInvite = (invite: Invitation) => {
-    const newUser: User = {
-      id: Math.random().toString(36).substr(2, 9),
-      name: invite.email.split('@')[0],
-      email: invite.email,
-      role: invite.role,
-      departmentId: invite.departmentId
-    };
+  const handleAcceptInvite = async (invite: Invitation) => {
+    try {
+      const { error } = await supabase
+        .from('invitations')
+        .update({ status: 'Aceito' })
+        .eq('id', invite.id);
 
-    setUsers([...users, newUser]);
-    setInvitations(invitations.filter(i => i.id !== invite.id));
+      if (error) throw error;
+      setInvitations(prev => prev.filter(i => i.id !== invite.id));
+    } catch (error) {
+      console.error('Error accepting invite:', error);
+      alert('Erro ao aceitar convite.');
+    }
+  };
+
+  const handleDeleteInvite = async (inviteId: string) => {
+    const previousInvites = invitations;
+    setInvitations(prev => prev.filter(i => i.id !== inviteId));
+
+    try {
+      const { error } = await supabase
+        .from('invitations')
+        .delete()
+        .eq('id', inviteId);
+
+      if (error) throw error;
+    } catch (error) {
+      console.error('Error deleting invite:', error);
+      setInvitations(previousInvites);
+      alert('Erro ao excluir convite.');
+    }
   };
 
   const handleRestartWA = async () => {
@@ -1182,7 +1355,7 @@ export default function App() {
     try {
       const { error } = await supabase
         .from('customers')
-        .insert({ name, phone, email, address });
+        .upsert({ name, phone, email, address }, { onConflict: 'phone' });
       
       if (error) throw error;
       alert('Cliente adicionado com sucesso!');
@@ -1216,23 +1389,9 @@ export default function App() {
 
     try {
       setLoading(true);
-      // 1. Upload to Supabase Storage
-      const fileExt = file.name.split('.').pop();
-      const fileName = `${Date.now()}-${file.name.replace(/\s/g, '_')}`;
-      const filePath = `documents/${selectedTicketId}/${fileName}`;
+      const uploadData = await uploadPersistentFile(file, file.name);
+      const fileExt = (uploadData.originalName || file.name).split('.').pop();
 
-      const { data: uploadData, error: uploadError } = await supabase.storage
-        .from('chat-media')
-        .upload(filePath, file);
-
-      if (uploadError) throw uploadError;
-
-      // 2. Get Public URL
-      const { data: { publicUrl } } = supabase.storage
-        .from('chat-media')
-        .getPublicUrl(filePath);
-
-      // 3. Save to ticket_documents table
       const { data: docData, error: docError } = await supabase
         .from('ticket_documents')
         .insert({
@@ -1240,8 +1399,10 @@ export default function App() {
           customer_id: ticket.customerId,
           department_id: ticket.departmentId || currentUser.departmentId,
           name: documentCategory || file.name,
-          file_url: publicUrl,
+          file_url: uploadData.url,
           file_type: fileExt,
+          storage_path: uploadData.path,
+          bucket: uploadData.bucket,
           uploaded_by: currentUser.id
         })
         .select()
@@ -1256,8 +1417,10 @@ export default function App() {
         customerId: ticket.customerId,
         departmentId: ticket.departmentId || currentUser.departmentId || '',
         name: documentCategory || file.name,
-        fileUrl: publicUrl,
+        fileUrl: uploadData.url,
         fileType: fileExt,
+        storagePath: uploadData.path,
+        bucket: uploadData.bucket,
         uploadedBy: currentUser.id,
         createdAt: new Date()
       };
@@ -1300,6 +1463,46 @@ export default function App() {
   };
 
   const canAccessSystemSettings = isAdminRole(currentUser?.role);
+
+  const handleSaveCompanySettings = async () => {
+    setIsSavingCompanySettings(true);
+
+    try {
+      const payload = {
+        id: 'default',
+        company_name: companySettingsDraft.companyName.trim() || defaultCompanySettings.companyName,
+        company_email: companySettingsDraft.companyEmail.trim() || null,
+        company_phone: companySettingsDraft.companyPhone.trim() || null,
+        company_address: companySettingsDraft.companyAddress.trim() || null,
+        logo_url: companySettingsDraft.logoUrl.trim() || officialLogoPath
+      };
+
+      const { data, error } = await supabase
+        .from('company_settings')
+        .upsert(payload, { onConflict: 'id' })
+        .select()
+        .maybeSingle();
+
+      if (error) throw error;
+
+      const mappedSettings = mapCompanySettings(data || payload);
+      setCompanySettings(mappedSettings);
+      setCompanySettingsDraft(mappedSettings);
+      insertActivityLog({
+        actor: currentUser,
+        action: 'company_settings_updated',
+        entityType: 'company_settings',
+        entityId: 'default',
+        details: { companyName: mappedSettings.companyName }
+      });
+      alert('Configurações da empresa salvas.');
+    } catch (error: any) {
+      console.error('Error saving company settings:', error);
+      alert('Erro ao salvar configurações da empresa: ' + (error?.message || error));
+    } finally {
+      setIsSavingCompanySettings(false);
+    }
+  };
 
   const handleSettings = () => {
     if (!canAccessSystemSettings) {
@@ -1596,10 +1799,14 @@ export default function App() {
   };
 
   const handleUpdateDeptRequirements = async (deptId: string, requirements: string[]) => {
+    const normalizedRequirements = Array.from(new Set(
+      requirements.map(item => item.trim()).filter(Boolean)
+    ));
+
     try {
       const { error } = await supabase
         .from('departments')
-        .update({ required_documents: requirements })
+        .update({ required_documents: normalizedRequirements })
         .eq('id', deptId);
       if (error) throw error;
       fetchData(false);
@@ -1630,7 +1837,7 @@ export default function App() {
         .from('profiles')
         .update({
           role: editUserData.role,
-          department_id: editUserData.departmentId
+          department_id: editUserData.departmentId || null
         })
         .eq('id', editingUser);
       if (error) throw error;
@@ -1655,7 +1862,7 @@ export default function App() {
       // Try with sequence first
       const { data, error } = await supabase
         .from('departments')
-        .insert({ name: newDeptName, sequence })
+        .upsert({ name: newDeptName, sequence }, { onConflict: 'name' })
         .select()
         .maybeSingle();
         
@@ -1664,18 +1871,24 @@ export default function App() {
         console.warn('Failed to insert with sequence, trying without it...', error);
         const { data: data2, error: error2 } = await supabase
           .from('departments')
-          .insert({ name: newDeptName })
+          .upsert({ name: newDeptName }, { onConflict: 'name' })
           .select()
           .maybeSingle();
         
         if (error2) throw error2;
         if (data2) {
           console.log('[ADMIN] Department added successfully (fallback):', data2);
-          setDepartments(prev => [...prev, data2].sort((a, b) => (a.sequence || 0) - (b.sequence || 0)));
+          setDepartments(prev => [
+            ...prev.filter(dept => dept.id !== data2.id),
+            { ...data2, requiredDocuments: data2.required_documents || [] }
+          ].sort((a, b) => (a.sequence || 0) - (b.sequence || 0)));
         }
       } else if (data) {
         console.log('[ADMIN] Department added successfully:', data);
-        setDepartments(prev => [...prev, data].sort((a, b) => (a.sequence || 0) - (b.sequence || 0)));
+        setDepartments(prev => [
+          ...prev.filter(dept => dept.id !== data.id),
+          { ...data, requiredDocuments: data.required_documents || [] }
+        ].sort((a, b) => (a.sequence || 0) - (b.sequence || 0)));
       }
       setNewDeptName('');
       setIsAddingDept(false);
@@ -1781,15 +1994,19 @@ export default function App() {
                            msg.text.includes('[FILE]') ?'[Arquivo]' : 
                            `"${msg.text.substring(0, 100)}${msg.text.length > 100 ?'...' : ''}"`;
 
-        await supabase
+        const { error: internalFlagError } = await supabase
           .from('internal_messages')
           .insert({
             ticket_id: ticketId,
             text: `MENSAGEM MARCADA: ${contextText}`,
-            sender_id: 'system',
+            sender_id: null,
             sender_name: 'Sistema',
             quoted_message_id: messageId
           });
+
+        if (internalFlagError) {
+          console.warn('[CHAT] Internal flag note not saved:', internalFlagError.message);
+        }
       }
     } catch (error) {
       console.error('Error flagging message:', error);
@@ -1907,21 +2124,11 @@ export default function App() {
           throw new Error(errorData.error || 'Failed to send WhatsApp message');
         }
 
-        const { error } = await supabase
-          .from('messages')
-          .insert({
-            ticket_id: selectedTicketId,
-            text: messageText,
-            sender: 'agent'
-          });
-
-        if (error) throw error;
-
-        // Update ticket last message
-        await supabase
-          .from('tickets')
-          .update({ last_message: messageText, updated_at: new Date().toISOString() })
-          .eq('id', selectedTicketId);
+        await createPersistentMessage({
+          ticketId: selectedTicketId,
+          text: messageText,
+          sender: 'agent'
+        });
 
         setInputMessage('');
       } catch (error) {
@@ -3195,7 +3402,71 @@ export default function App() {
             <p className="text-sm text-slate-500 mb-8">
               Gestão de departamentos com ordem de fluxo, colaboradores e conexão do WhatsApp por QR Code ou número.
             </p>
-            
+
+            <div className="mb-10 bg-white p-8 rounded-3xl border border-slate-200 shadow-sm hover:shadow-md transition-shadow">
+              <div className="flex items-center justify-between mb-6">
+                <div>
+                  <h2 className="text-lg font-bold flex items-center gap-2">
+                    <Briefcase className="w-5 h-5 text-indigo-600" /> Empresa
+                  </h2>
+                  <p className="text-xs text-slate-400 mt-1">Dados institucionais usados pelo sistema.</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleSaveCompanySettings}
+                  disabled={isSavingCompanySettings}
+                  className="bg-indigo-600 text-white px-4 py-2 rounded-lg text-sm font-bold flex items-center gap-2 disabled:opacity-50"
+                >
+                  {isSavingCompanySettings ?<RefreshCw className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                  Salvar
+                </button>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1.5 ml-1">Nome da Empresa</label>
+                  <input
+                    value={companySettingsDraft.companyName}
+                    onChange={e => setCompanySettingsDraft(prev => ({ ...prev, companyName: e.target.value }))}
+                    className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1.5 ml-1">E-mail</label>
+                  <input
+                    type="email"
+                    value={companySettingsDraft.companyEmail}
+                    onChange={e => setCompanySettingsDraft(prev => ({ ...prev, companyEmail: e.target.value }))}
+                    className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1.5 ml-1">Telefone</label>
+                  <input
+                    value={companySettingsDraft.companyPhone}
+                    onChange={e => setCompanySettingsDraft(prev => ({ ...prev, companyPhone: e.target.value }))}
+                    className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1.5 ml-1">Logo URL</label>
+                  <input
+                    value={companySettingsDraft.logoUrl}
+                    onChange={e => setCompanySettingsDraft(prev => ({ ...prev, logoUrl: e.target.value }))}
+                    className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none"
+                  />
+                </div>
+                <div className="md:col-span-2">
+                  <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1.5 ml-1">Endereço</label>
+                  <textarea
+                    value={companySettingsDraft.companyAddress}
+                    onChange={e => setCompanySettingsDraft(prev => ({ ...prev, companyAddress: e.target.value }))}
+                    className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none min-h-20"
+                  />
+                </div>
+              </div>
+            </div>
+             
             {/* Invite Collaborator Section */}
             <div className="mb-10 bg-white p-8 rounded-3xl border border-slate-200 shadow-sm hover:shadow-md transition-shadow">
               <div className="flex items-center justify-between mb-6">
@@ -3274,7 +3545,7 @@ export default function App() {
                             <ExternalLink className="w-3 h-3" /> Simular Aceite
                           </button>
                           <button 
-                            onClick={() => setInvitations(invitations.filter(i => i.id !== invite.id))}
+                            onClick={() => handleDeleteInvite(invite.id)}
                             className="p-1.5 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors"
                           >
                             <Trash2 className="w-4 h-4" />
@@ -3690,9 +3961,10 @@ export default function App() {
                               </select>
                               <select 
                                 className="text-[10px] p-1 border rounded"
-                                value={editUserData.departmentId}
+                                value={editUserData.departmentId || ''}
                                 onChange={e => setEditUserData({...editUserData, departmentId: e.target.value})}
                               >
+                                <option value="">Todos os departamentos</option>
                                 {departments.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
                               </select>
                               <button onClick={handleUpdateUser} className="text-green-600"><Save className="w-4 h-4" /></button>
@@ -3722,7 +3994,7 @@ export default function App() {
                               setEditingUser(user.id);
                               setEditUserData({
                                 role: user.role,
-                                departmentId: user.departmentId
+                                departmentId: user.departmentId || ''
                               });
                             }}
                             className="text-xs font-bold text-indigo-600 hover:underline"

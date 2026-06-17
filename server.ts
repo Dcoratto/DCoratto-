@@ -43,6 +43,9 @@ const upload = multer({ storage: storage });
 
 const supabaseUrl = process.env.VITE_SUPABASE_URL;
 const supabaseAnonKey = process.env.VITE_SUPABASE_ANON_KEY;
+const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY;
+const PRIMARY_ADMIN_EMAIL = 'dcorattoinovacao@gmail.com';
+const PRIMARY_ADMIN_PASSWORD = 'sob_medida';
 
 if (!supabaseUrl || !supabaseAnonKey) {
   console.error('CRITICAL: Supabase environment variables are missing!');
@@ -54,10 +57,113 @@ const supabase = createClient(
   supabaseAnonKey || 'placeholder'
 );
 
+const supabaseAdmin = supabaseUrl && supabaseServiceRoleKey
+  ? createClient(supabaseUrl, supabaseServiceRoleKey, {
+      auth: {
+        autoRefreshToken: false,
+        persistSession: false
+      }
+    })
+  : null;
+
 // Helper to log Supabase errors clearly
 const logSupabaseError = (context: string, error: any) => {
   console.error(`[SUPABASE-ERROR] ${context}:`, JSON.stringify(error, null, 2));
 };
+
+const isPrimaryAdminCredential = (email?: string, password?: string) => (
+  (email || '').trim().toLowerCase() === PRIMARY_ADMIN_EMAIL &&
+  password === PRIMARY_ADMIN_PASSWORD
+);
+
+async function findAuthUserByEmail(email: string) {
+  if (!supabaseAdmin) return null;
+
+  const targetEmail = email.trim().toLowerCase();
+  const perPage = 1000;
+
+  for (let page = 1; page <= 20; page += 1) {
+    const { data, error } = await supabaseAdmin.auth.admin.listUsers({ page, perPage });
+    if (error) throw error;
+
+    const user = data.users.find(item => item.email?.trim().toLowerCase() === targetEmail);
+    if (user) return user;
+    if (data.users.length < perPage) return null;
+  }
+
+  return null;
+}
+
+async function ensurePrimaryAdminUser() {
+  if (!supabaseAdmin) {
+    return {
+      bootstrapped: false,
+      reason: 'service_role_missing'
+    };
+  }
+
+  const existingUser = await findAuthUserByEmail(PRIMARY_ADMIN_EMAIL);
+  let authUser = existingUser;
+
+  if (existingUser) {
+    const { data, error } = await supabaseAdmin.auth.admin.updateUserById(existingUser.id, {
+      password: PRIMARY_ADMIN_PASSWORD,
+      email_confirm: true,
+      user_metadata: {
+        ...(existingUser.user_metadata || {}),
+        full_name: existingUser.user_metadata?.full_name || 'dcorattoinovacao'
+      }
+    } as any);
+
+    if (error) throw error;
+    authUser = data.user || existingUser;
+  } else {
+    const { data, error } = await supabaseAdmin.auth.admin.createUser({
+      email: PRIMARY_ADMIN_EMAIL,
+      password: PRIMARY_ADMIN_PASSWORD,
+      email_confirm: true,
+      user_metadata: {
+        full_name: 'dcorattoinovacao'
+      }
+    } as any);
+
+    if (error) throw error;
+    authUser = data.user;
+  }
+
+  if (!authUser?.id) throw new Error('Unable to create or load primary admin auth user.');
+
+  const profilePayload = {
+    id: authUser.id,
+    name: 'dcorattoinovacao',
+    email: PRIMARY_ADMIN_EMAIL,
+    role: 'Super Admin',
+    department_id: null
+  };
+
+  const { error: profileError } = await supabaseAdmin
+    .from('profiles')
+    .upsert(profilePayload, { onConflict: 'id' });
+
+  if (profileError) {
+    const { error: updateByEmailError } = await supabaseAdmin
+      .from('profiles')
+      .update({
+        name: profilePayload.name,
+        role: profilePayload.role,
+        department_id: profilePayload.department_id
+      })
+      .eq('email', PRIMARY_ADMIN_EMAIL);
+
+    if (updateByEmailError) throw profileError;
+  }
+
+  return {
+    bootstrapped: true,
+    userId: authUser.id,
+    email: PRIMARY_ADMIN_EMAIL
+  };
+}
 
 async function uploadToSupabase(buffer: Buffer, fileName: string, mimeType: string) {
   const bucketName = 'chat-media';
@@ -320,6 +426,21 @@ async function startServer() {
           if (!remoteJid || !remoteJid.endsWith('@s.whatsapp.net')) continue;
 
           const phone = remoteJid.split('@')[0].replace(/\D/g, '');
+          const whatsappMessageId = msg.key.id ? String(msg.key.id) : null;
+          if (whatsappMessageId) {
+            const { data: existingMessage, error: existingMessageError } = await supabase
+              .from('messages')
+              .select('id')
+              .eq('whatsapp_message_id', whatsappMessageId)
+              .maybeSingle();
+
+            if (existingMessageError) {
+              logSupabaseError('Checking duplicate WhatsApp message', existingMessageError);
+            } else if (existingMessage) {
+              console.log(`[WA-IN] Duplicate WhatsApp message ignored: ${whatsappMessageId}`);
+              continue;
+            }
+          }
           console.log(`[WA-IN] Processing message from ${phone}:`, JSON.stringify(msg.message).substring(0, 100));
           
           // Better message text extraction
@@ -492,7 +613,8 @@ async function startServer() {
               media_url: mediaUrl || null,
               media_mime_type: mediaMimeType || null,
               media_file_name: actualMessage.documentMessage?.fileName || mediaFileName || null,
-              media_size: mediaSize || null
+              media_size: mediaSize || null,
+              whatsapp_message_id: whatsappMessageId
             })
             .select('id')
             .maybeSingle();
@@ -592,6 +714,36 @@ async function startServer() {
 
   // API Routes
   app.use('/media', express.static(mediaDir));
+
+  app.post('/api/bootstrap/admin', async (req, res) => {
+    const { email, password } = req.body || {};
+
+    if (!isPrimaryAdminCredential(email, password)) {
+      return res.status(403).json({
+        success: false,
+        error: 'Invalid admin bootstrap credentials.'
+      });
+    }
+
+    try {
+      const result = await ensurePrimaryAdminUser();
+      if (!result.bootstrapped) {
+        return res.status(503).json({
+          success: false,
+          code: result.reason,
+          error: 'SUPABASE_SERVICE_ROLE_KEY is not configured on the server.'
+        });
+      }
+
+      res.json({ success: true, ...result });
+    } catch (error: any) {
+      console.error('[BOOTSTRAP] Failed to ensure primary admin:', error);
+      res.status(500).json({
+        success: false,
+        error: error?.message || 'Failed to bootstrap primary admin.'
+      });
+    }
+  });
 
   // File Upload Endpoint
   app.post("/api/upload", upload.single('file'), async (req, res) => {
@@ -854,6 +1006,18 @@ async function startServer() {
         res.status(200).send('Server is running, but frontend is not built yet.');
       });
     }
+  }
+
+  if (supabaseAdmin) {
+    ensurePrimaryAdminUser()
+      .then(result => {
+        if (result.bootstrapped) {
+          console.log(`[BOOTSTRAP] Primary admin ready: ${result.email}`);
+        }
+      })
+      .catch(error => console.error('[BOOTSTRAP] Primary admin bootstrap failed:', error));
+  } else {
+    console.warn('[BOOTSTRAP] SUPABASE_SERVICE_ROLE_KEY not set. Existing admin passwords cannot be reset automatically.');
   }
 
   app.listen(PORT, "0.0.0.0", () => {

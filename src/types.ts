@@ -97,6 +97,8 @@ export interface TicketDocument {
   name: string;
   fileUrl: string;
   fileType?: string;
+  storagePath?: string;
+  bucket?: string;
   uploadedBy?: string;
   createdAt: Date;
 }
