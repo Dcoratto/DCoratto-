@@ -154,7 +154,6 @@ export default function App() {
   const [openTicketMenuId, setOpenTicketMenuId] = useState<string | null>(null);
 
   const AUTO_PROVISION_EMAIL = 'dcorattoinovacao@gmail.com';
-  const AUTO_PROVISION_PASSWORD = 'sob_medida';
   const AUTO_PROVISION_NAME = 'dcorattoinovacao';
 
   const isAdminRole = (role?: string) => {
@@ -557,6 +556,8 @@ export default function App() {
       throw new Error(message);
     }
 
+    await clearLocalAuthSession();
+
     const { data: sessionData, error: sessionError } = await supabase.auth.setSession({
       access_token: data.session.access_token,
       refresh_token: data.session.refresh_token
@@ -576,13 +577,11 @@ export default function App() {
     setAuthSubmitting(true);
     setAuthError(null);
     const normalizedEmail = email.trim().toLowerCase();
-    const passwordForLogin = isPrimaryAdminEmail(normalizedEmail) ?password.trim() : password;
-    const shouldBootstrapPrimaryAdmin =
-      normalizedEmail === AUTO_PROVISION_EMAIL &&
-      passwordForLogin === AUTO_PROVISION_PASSWORD;
+    const isPrimaryAdminLogin = isPrimaryAdminEmail(normalizedEmail);
+    const passwordForLogin = isPrimaryAdminLogin ?password.trim() : password;
 
     try {
-      if (shouldBootstrapPrimaryAdmin) {
+      if (isPrimaryAdminLogin) {
         await loginPrimaryAdminViaServer(normalizedEmail, passwordForLogin);
         return;
       }
@@ -603,7 +602,7 @@ export default function App() {
         return;
       }
 
-      if (shouldBootstrapPrimaryAdmin) {
+      if (isPrimaryAdminLogin) {
         setAuthError(
           err?.message ||
           'Nao foi possivel preparar o admin. Verifique /api/bootstrap/status no deploy e confirme SUPABASE_SERVICE_ROLE_KEY.'
