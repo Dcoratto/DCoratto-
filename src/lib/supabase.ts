@@ -46,6 +46,10 @@ export const checkSupabaseReachability = async (timeoutMs = 5000) => {
   try {
     await fetch(`${supabaseUrl.replace(/\/$/, '')}/auth/v1/health`, {
       method: 'GET',
+      headers: {
+        apikey: supabaseAnonKey,
+        Authorization: `Bearer ${supabaseAnonKey}`
+      },
       cache: 'no-store',
       signal: controller.signal
     });

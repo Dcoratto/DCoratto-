@@ -60,6 +60,17 @@ const supabase = createClient(
   supabaseAnonKey || 'placeholder'
 );
 
+const supabaseAuthVerifier = createClient(
+  supabaseUrl || 'https://placeholder.supabase.co',
+  supabaseAnonKey || 'placeholder',
+  {
+    auth: {
+      autoRefreshToken: false,
+      persistSession: false
+    }
+  }
+);
+
 const supabaseAdmin = supabaseUrl && supabaseServiceRoleKey
   ? createClient(supabaseUrl, supabaseServiceRoleKey, {
       auth: {
@@ -171,10 +182,22 @@ async function ensurePrimaryAdminUser() {
 
   if (profileError) throw profileError;
 
+  const { data: verifyData, error: verifyError } = await supabaseAuthVerifier.auth.signInWithPassword({
+    email: PRIMARY_ADMIN_EMAIL,
+    password: PRIMARY_ADMIN_PASSWORD
+  });
+
+  if (verifyError || !verifyData.user) {
+    throw new Error(`Primary admin password reset verification failed: ${verifyError?.message || 'No user returned'}`);
+  }
+
+  await supabaseAuthVerifier.auth.signOut().catch(() => undefined);
+
   return {
     bootstrapped: true,
     userId: authUser.id,
-    email: PRIMARY_ADMIN_EMAIL
+    email: PRIMARY_ADMIN_EMAIL,
+    signInVerified: true
   };
 }
 
@@ -728,7 +751,16 @@ async function startServer() {
   // API Routes
   app.use('/media', express.static(mediaDir));
 
-  app.get('/api/bootstrap/status', (_req, res) => {
+  app.get('/api/bootstrap/status', async (_req, res) => {
+    let serviceRoleUsable = false;
+    let serviceRoleError: string | null = null;
+
+    if (supabaseAdmin) {
+      const { error } = await supabaseAdmin.auth.admin.listUsers({ page: 1, perPage: 1 });
+      serviceRoleUsable = !error;
+      serviceRoleError = error?.message || null;
+    }
+
     res.json({
       ok: true,
       supabaseUrlConfigured: !!supabaseUrl,
@@ -740,7 +772,9 @@ async function startServer() {
         }
       })() : null,
       anonKeyConfigured: !!supabaseAnonKey,
-      serviceRoleConfigured: !!supabaseServiceRoleKey
+      serviceRoleConfigured: !!supabaseServiceRoleKey,
+      serviceRoleUsable,
+      serviceRoleError
     });
   });
 
