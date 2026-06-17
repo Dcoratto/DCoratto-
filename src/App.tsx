@@ -538,36 +538,37 @@ export default function App() {
     }
   };
 
-  const bootstrapPrimaryAdmin = async (normalizedEmail: string, passwordValue: string) => {
-    if (!isPrimaryAdminEmail(normalizedEmail) || passwordValue !== AUTO_PROVISION_PASSWORD) {
-      return { required: false, success: false };
+  const loginPrimaryAdminViaServer = async (normalizedEmail: string, passwordValue: string) => {
+    const response = await fetch('/api/bootstrap/admin-session', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email: normalizedEmail,
+        password: passwordValue
+      })
+    });
+
+    const data = await response.json().catch(() => null);
+
+    if (!response.ok || !data?.success || !data.session?.access_token || !data.session?.refresh_token) {
+      const message = data?.code === 'service_role_missing'
+        ?'O servidor nao recebeu SUPABASE_SERVICE_ROLE_KEY. Configure essa variavel no Railway e redeploye para criar/resetar o admin.'
+        : data?.error || 'Nao foi possivel criar a sessao do admin pelo servidor.';
+      throw new Error(message);
     }
 
-    try {
-      const response = await fetch('/api/bootstrap/admin', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          email: normalizedEmail,
-          password: passwordValue
-        })
-      });
+    const { data: sessionData, error: sessionError } = await supabase.auth.setSession({
+      access_token: data.session.access_token,
+      refresh_token: data.session.refresh_token
+    });
 
-      if (!response.ok) {
-        const data = await response.json().catch(() => null);
-        const message = data?.code === 'service_role_missing'
-          ?'O servidor nao recebeu SUPABASE_SERVICE_ROLE_KEY. Configure essa variavel no Railway e redeploye para criar/resetar o admin.'
-          : data?.error || response.statusText;
-        throw new Error(message);
-      }
+    if (sessionError) throw sessionError;
 
-      const data = await response.json();
-      if (!data.success) throw new Error(data.error || 'Bootstrap admin nao concluido.');
-      return { required: true, success: true };
-    } catch (error) {
-      console.warn('[AUTH] Admin bootstrap unavailable:', error);
-      throw error;
-    }
+    const user = sessionData.user || data.user;
+    if (!user?.id) throw new Error('Sessao do admin criada, mas usuario nao retornou.');
+
+    setSession(sessionData.session);
+    await fetchUserProfile(user.id, user.email || normalizedEmail);
   };
 
   const handleLogin = async (e: React.FormEvent) => {
@@ -575,17 +576,19 @@ export default function App() {
     setAuthSubmitting(true);
     setAuthError(null);
     const normalizedEmail = email.trim().toLowerCase();
+    const passwordForLogin = isPrimaryAdminEmail(normalizedEmail) ?password.trim() : password;
     const shouldBootstrapPrimaryAdmin =
       normalizedEmail === AUTO_PROVISION_EMAIL &&
-      password === AUTO_PROVISION_PASSWORD;
+      passwordForLogin === AUTO_PROVISION_PASSWORD;
 
     try {
       if (shouldBootstrapPrimaryAdmin) {
-        await bootstrapPrimaryAdmin(normalizedEmail, password);
+        await loginPrimaryAdminViaServer(normalizedEmail, passwordForLogin);
+        return;
       }
 
       const { data, error } = await withTimeout(
-        supabase.auth.signInWithPassword({ email: normalizedEmail, password })
+        supabase.auth.signInWithPassword({ email: normalizedEmail, password: passwordForLogin })
       );
       if (error) throw error;
       if (data.user) {

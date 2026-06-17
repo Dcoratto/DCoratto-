@@ -71,6 +71,17 @@ const supabaseAuthVerifier = createClient(
   }
 );
 
+const createSupabaseAuthVerifier = () => createClient(
+  supabaseUrl || 'https://placeholder.supabase.co',
+  supabaseAnonKey || 'placeholder',
+  {
+    auth: {
+      autoRefreshToken: false,
+      persistSession: false
+    }
+  }
+);
+
 const supabaseAdmin = supabaseUrl && supabaseServiceRoleKey
   ? createClient(supabaseUrl, supabaseServiceRoleKey, {
       auth: {
@@ -87,7 +98,7 @@ const logSupabaseError = (context: string, error: any) => {
 
 const isPrimaryAdminCredential = (email?: string, password?: string) => (
   (email || '').trim().toLowerCase() === PRIMARY_ADMIN_EMAIL &&
-  password === PRIMARY_ADMIN_PASSWORD
+  (password || '').trim() === PRIMARY_ADMIN_PASSWORD
 );
 
 async function findAuthUserByEmail(email: string) {
@@ -198,6 +209,30 @@ async function ensurePrimaryAdminUser() {
     userId: authUser.id,
     email: PRIMARY_ADMIN_EMAIL,
     signInVerified: true
+  };
+}
+
+async function createPrimaryAdminSession() {
+  const bootstrapResult = await ensurePrimaryAdminUser();
+  if (!bootstrapResult.bootstrapped) return bootstrapResult;
+
+  const verifier = createSupabaseAuthVerifier();
+  const { data, error } = await verifier.auth.signInWithPassword({
+    email: PRIMARY_ADMIN_EMAIL,
+    password: PRIMARY_ADMIN_PASSWORD
+  });
+
+  if (error || !data.user || !data.session) {
+    throw new Error(`Primary admin session creation failed: ${error?.message || 'No session returned'}`);
+  }
+
+  return {
+    ...bootstrapResult,
+    user: {
+      id: data.user.id,
+      email: data.user.email
+    },
+    session: data.session
   };
 }
 
@@ -804,6 +839,36 @@ async function startServer() {
       res.status(500).json({
         success: false,
         error: error?.message || 'Failed to bootstrap primary admin.'
+      });
+    }
+  });
+
+  app.post('/api/bootstrap/admin-session', async (req, res) => {
+    const { email, password } = req.body || {};
+
+    if (!isPrimaryAdminCredential(email, password)) {
+      return res.status(403).json({
+        success: false,
+        error: 'Invalid admin bootstrap credentials.'
+      });
+    }
+
+    try {
+      const result = await createPrimaryAdminSession();
+      if (!result.bootstrapped) {
+        return res.status(503).json({
+          success: false,
+          code: result.reason,
+          error: 'SUPABASE_SERVICE_ROLE_KEY is not configured on the server.'
+        });
+      }
+
+      res.json({ success: true, ...result });
+    } catch (error: any) {
+      console.error('[BOOTSTRAP] Failed to create primary admin session:', error);
+      res.status(500).json({
+        success: false,
+        error: error?.message || 'Failed to create primary admin session.'
       });
     }
   });
