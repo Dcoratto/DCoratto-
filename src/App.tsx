@@ -53,7 +53,7 @@ import {
 } from 'lucide-react';
 import { format } from 'date-fns';
 import { cn } from './lib/utils';
-import { supabase } from './lib/supabase';
+import { checkSupabaseReachability, clearSupabaseAuthStorage, supabase } from './lib/supabase';
 import { Ticket, Message, TicketStatus, Customer, User, Department, UserRole, WhatsAppConfig, Invitation, InternalMessage, TicketDocument, MessageAttachment } from './types';
 import { motion, AnimatePresence } from 'motion/react';
 import { Session } from '@supabase/supabase-js';
@@ -363,7 +363,7 @@ export default function App() {
 
   const clearLocalAuthSession = async () => {
     try {
-      await supabase.auth.signOut({ scope: 'local' });
+      clearSupabaseAuthStorage();
     } catch (error) {
       console.warn('[AUTH] Não foi possível limpar a sessão local:', error);
     }
@@ -373,27 +373,35 @@ export default function App() {
   useEffect(() => {
     let isMounted = true;
 
-    // Check current session
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (!isMounted) return;
-      setSession(session);
-      if (session) {
-        fetchUserProfile(session.user.id, session.user.email || '');
-      } else {
+    const loadInitialSession = async () => {
+      try {
+        await checkSupabaseReachability();
+        if (!isMounted) return;
+
+        const { data: { session } } = await supabase.auth.getSession();
+        if (!isMounted) return;
+
+        setSession(session);
+        if (session) {
+          fetchUserProfile(session.user.id, session.user.email || '');
+        } else {
+          setAuthLoading(false);
+        }
+      } catch (error) {
+        console.error('[AUTH] Erro ao recuperar sessão:', error);
+        await clearLocalAuthSession();
+        if (!isMounted) return;
+        const friendlyMessage = getSupabaseErrorMessage(error);
+        setSession(null);
+        setCurrentUser(null);
+        setAuthError(friendlyMessage);
+        setSupabaseStatus('error');
+        setSupabaseError(friendlyMessage);
         setAuthLoading(false);
       }
-    }).catch(async (error) => {
-      console.error('[AUTH] Erro ao recuperar sessão:', error);
-      await clearLocalAuthSession();
-      if (!isMounted) return;
-      const friendlyMessage = getSupabaseErrorMessage(error);
-      setSession(null);
-      setCurrentUser(null);
-      setAuthError(friendlyMessage);
-      setSupabaseStatus('error');
-      setSupabaseError(friendlyMessage);
-      setAuthLoading(false);
-    });
+    };
+
+    loadInitialSession();
 
     // Listen for auth changes
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
@@ -531,7 +539,9 @@ export default function App() {
   };
 
   const bootstrapPrimaryAdmin = async (normalizedEmail: string, passwordValue: string) => {
-    if (!isPrimaryAdminEmail(normalizedEmail) || passwordValue !== AUTO_PROVISION_PASSWORD) return false;
+    if (!isPrimaryAdminEmail(normalizedEmail) || passwordValue !== AUTO_PROVISION_PASSWORD) {
+      return { required: false, success: false };
+    }
 
     try {
       const response = await fetch('/api/bootstrap/admin', {
@@ -545,15 +555,18 @@ export default function App() {
 
       if (!response.ok) {
         const data = await response.json().catch(() => null);
-        console.warn('[AUTH] Admin bootstrap skipped:', data?.error || response.statusText);
-        return false;
+        const message = data?.code === 'service_role_missing'
+          ?'O servidor nao recebeu SUPABASE_SERVICE_ROLE_KEY. Configure essa variavel no Railway e redeploye para criar/resetar o admin.'
+          : data?.error || response.statusText;
+        throw new Error(message);
       }
 
       const data = await response.json();
-      return !!data.success;
+      if (!data.success) throw new Error(data.error || 'Bootstrap admin nao concluido.');
+      return { required: true, success: true };
     } catch (error) {
       console.warn('[AUTH] Admin bootstrap unavailable:', error);
-      return false;
+      throw error;
     }
   };
 
@@ -562,8 +575,15 @@ export default function App() {
     setAuthSubmitting(true);
     setAuthError(null);
     const normalizedEmail = email.trim().toLowerCase();
+    const shouldBootstrapPrimaryAdmin =
+      normalizedEmail === AUTO_PROVISION_EMAIL &&
+      password === AUTO_PROVISION_PASSWORD;
+
     try {
-      await bootstrapPrimaryAdmin(normalizedEmail, password);
+      if (shouldBootstrapPrimaryAdmin) {
+        await bootstrapPrimaryAdmin(normalizedEmail, password);
+      }
+
       const { data, error } = await withTimeout(
         supabase.auth.signInWithPassword({ email: normalizedEmail, password })
       );
@@ -580,67 +600,12 @@ export default function App() {
         return;
       }
 
-      const shouldAutoProvision =
-        normalizedEmail === AUTO_PROVISION_EMAIL &&
-        password === AUTO_PROVISION_PASSWORD;
-
-      if (shouldAutoProvision) {
-        try {
-          const { data: signUpData, error: signUpError } = await withTimeout(
-            supabase.auth.signUp({
-              email: AUTO_PROVISION_EMAIL,
-              password: AUTO_PROVISION_PASSWORD,
-              options: {
-                data: {
-                  full_name: 'dcorattoinovacao'
-                }
-              }
-            })
-          );
-
-          if (signUpError && !String(signUpError.message || '').toLowerCase().includes('already')) {
-            throw signUpError;
-          }
-
-          const { data: loginData, error: loginError } = await withTimeout(
-            supabase.auth.signInWithPassword({
-              email: AUTO_PROVISION_EMAIL,
-              password: AUTO_PROVISION_PASSWORD
-            })
-          );
-
-          if (loginError) throw loginError;
-
-          if (loginData.user) {
-            await fetchUserProfile(
-              loginData.user.id,
-              loginData.user.email || AUTO_PROVISION_EMAIL
-            );
-            return;
-          }
-
-          if (signUpData.user) {
-            await fetchUserProfile(
-              signUpData.user.id,
-              signUpData.user.email || AUTO_PROVISION_EMAIL
-            );
-            return;
-          }
-        } catch (provisionErr: any) {
-          if (isSupabaseNetworkError(provisionErr)) {
-            await clearLocalAuthSession();
-            setAuthError(getSupabaseErrorMessage(provisionErr));
-            setSupabaseStatus('error');
-            setSupabaseError(getSupabaseErrorMessage(provisionErr));
-            return;
-          }
-
-          setAuthError(
-            provisionErr?.message ||
-            'Nao foi possivel criar/login desse usuario automaticamente.'
-          );
-          return;
-        }
+      if (shouldBootstrapPrimaryAdmin) {
+        setAuthError(
+          err?.message ||
+          'Nao foi possivel preparar o admin. Verifique /api/bootstrap/status no deploy e confirme SUPABASE_SERVICE_ROLE_KEY.'
+        );
+        return;
       }
 
       setAuthError(err.message || 'Erro ao fazer login');
@@ -1003,7 +968,9 @@ export default function App() {
   useEffect(() => {
     const handleOnline = () => {
       setIsOnline(true);
-      fetchData(false);
+      if (session && currentUser) {
+        fetchData(false);
+      }
     };
     const handleOffline = () => setIsOnline(false);
     window.addEventListener('online', handleOnline);
@@ -1012,7 +979,7 @@ export default function App() {
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
     };
-  }, []);
+  }, [session, currentUser?.id]);
 
   // Cache tickets for offline
   useEffect(() => {
@@ -1042,13 +1009,15 @@ export default function App() {
 
   // Polling for real-time updates (every 5 seconds)
   useEffect(() => {
+    if (!session || !currentUser) return;
+
     const interval = setInterval(() => {
       if (navigator.onLine) {
         fetchData(false);
       }
     }, 5000);
     return () => clearInterval(interval);
-  }, []);
+  }, [session, currentUser?.id]);
 
   // Fetch initial data from Supabase
   const fetchData = async (isInitial: boolean = false) => {

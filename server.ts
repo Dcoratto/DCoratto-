@@ -41,9 +41,12 @@ const storage = multer.diskStorage({
 
 const upload = multer({ storage: storage });
 
-const supabaseUrl = process.env.VITE_SUPABASE_URL;
-const supabaseAnonKey = process.env.VITE_SUPABASE_ANON_KEY;
-const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY;
+const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
+const supabaseAnonKey = process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY;
+const supabaseServiceRoleKey =
+  process.env.SUPABASE_SERVICE_ROLE_KEY ||
+  process.env.SUPABASE_SERVICE_KEY ||
+  process.env.VITE_SUPABASE_SERVICE_ROLE_KEY;
 const PRIMARY_ADMIN_EMAIL = 'dcorattoinovacao@gmail.com';
 const PRIMARY_ADMIN_PASSWORD = 'sob_medida';
 
@@ -141,22 +144,32 @@ async function ensurePrimaryAdminUser() {
     department_id: null
   };
 
+  const { data: profileByEmail, error: profileLookupError } = await supabaseAdmin
+    .from('profiles')
+    .select('id')
+    .eq('email', PRIMARY_ADMIN_EMAIL)
+    .maybeSingle();
+
+  if (profileLookupError) throw profileLookupError;
+
+  if (profileByEmail && profileByEmail.id !== authUser.id) {
+    const { error: archiveProfileError } = await supabaseAdmin
+      .from('profiles')
+      .update({
+        email: `archived-${profileByEmail.id}-${PRIMARY_ADMIN_EMAIL}`,
+        role: 'Colaborador',
+        department_id: null
+      })
+      .eq('id', profileByEmail.id);
+
+    if (archiveProfileError) throw archiveProfileError;
+  }
+
   const { error: profileError } = await supabaseAdmin
     .from('profiles')
     .upsert(profilePayload, { onConflict: 'id' });
 
-  if (profileError) {
-    const { error: updateByEmailError } = await supabaseAdmin
-      .from('profiles')
-      .update({
-        name: profilePayload.name,
-        role: profilePayload.role,
-        department_id: profilePayload.department_id
-      })
-      .eq('email', PRIMARY_ADMIN_EMAIL);
-
-    if (updateByEmailError) throw profileError;
-  }
+  if (profileError) throw profileError;
 
   return {
     bootstrapped: true,
@@ -714,6 +727,22 @@ async function startServer() {
 
   // API Routes
   app.use('/media', express.static(mediaDir));
+
+  app.get('/api/bootstrap/status', (_req, res) => {
+    res.json({
+      ok: true,
+      supabaseUrlConfigured: !!supabaseUrl,
+      supabaseHost: supabaseUrl ? (() => {
+        try {
+          return new URL(supabaseUrl).hostname;
+        } catch {
+          return 'invalid-url';
+        }
+      })() : null,
+      anonKeyConfigured: !!supabaseAnonKey,
+      serviceRoleConfigured: !!supabaseServiceRoleKey
+    });
+  });
 
   app.post('/api/bootstrap/admin', async (req, res) => {
     const { email, password } = req.body || {};
